@@ -1,0 +1,10 @@
+fastapi>=0.115,<1.0
+pydantic>=2.9,<3.0
+uvicorn[standard]>=0.30,<1.0
+scalar-fastapi==1.9.0
+SQLAlchemy>=2.0,<2.1
+psycopg[binary]>=3.2,<4
+alembic>=1.14,<2
+python-dotenv>=1,<2
+PyJWT>=2.10,<3
+pwdlib[argon2]>=0.3,<1
