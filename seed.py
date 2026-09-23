@@ -31,7 +31,7 @@ def seed_data():
         )
         insurer = existing_or_new(InsuranceCompany, {"name": "Bupa"}, {})
         for diagnosis, insurer_id, covered in [
-            (cold, None, False),
+            (cold, None, True),
             (migraine, None, True),
             (migraine, insurer.id, False),
         ]:

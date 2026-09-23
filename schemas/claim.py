@@ -50,7 +50,7 @@ def halalas(value: Decimal) -> int:
 
 
 class Issue(BaseModel):
-    severity: Literal["error"] = "error"
+    severity: Literal["error", "information"] = "error"
     code: Literal[
         "business-rule",
         "invalid",
@@ -59,8 +59,13 @@ class Issue(BaseModel):
         "invariant",
         "login",
         "forbidden",
+        "informational",
+        "transient",
+        "not-found",
     ]
     diagnostics: str
+    details: dict[str, list[dict[str, str]]] | None = None
+    expression: list[str] | None = None
 
 
 class OperationOutcome(BaseModel):

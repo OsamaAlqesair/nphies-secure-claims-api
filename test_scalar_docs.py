@@ -14,6 +14,7 @@ from testing_auth import provider_headers
 from models import (
     Base,
     DiagnosisCode,
+    NphiesTerminology,
     ServiceCode,
     InsuranceCompany,
     DiagnosisServiceRule,
@@ -73,6 +74,23 @@ def isolated_client():
     )
     Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine)
+    with sessions() as db:
+        db.add_all(
+            [
+                NphiesTerminology(
+                    code_system_url="http://hl7.org/fhir/sid/icd-10-am",
+                    code="G43",
+                    display="Test diagnosis",
+                ),
+                NphiesTerminology(
+                    code_system_url="http://nphies.sa/terminology/CodeSystem/procedures",
+                    code="70450",
+                    display="Test service",
+                ),
+            ]
+        )
+        db.commit()
+
     with sessions() as db:
         db.add_all(
             [

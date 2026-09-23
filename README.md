@@ -261,3 +261,74 @@ A database owner can disable triggers, so this is not tamper-proof storage again
 privileged administrators. No public audit-read endpoint or automatic retention
 purge is enabled. Restrict SQL access to authorized administrators. This covers
 current API actions; local account-management CLI events are not included.
+
+## FHIR claim pre-validation
+
+`POST /api/v1/claims/pre-validate` accepts the `ClaimSubmission` intake
+envelope with a provider/admin Bearer token. Use decimal strings for financial
+values in ordinary JSON requests. See `schemas/FHIR_CLAIM.md` and the complete
+synthetic payload fixture in `test_fhir_claim.py`.
+
+The router uses asynchronous SQLAlchemy sessions with the existing PostgreSQL
+configuration and psycopg 3 driver. Install updated requirements; async SQLite
+is used only in isolated tests.
+
+- Pydantic checks structure, linked references and exact line/claim arithmetic.
+- Insurer lookup requires matching Organization.fhir_id and an identifier
+  system/value pair, plus InsuranceCompany.organization_id. Unknown/unlinked
+  insurers fail closed; resource IDs are never treated as database primary keys.
+- Every service/linked-diagnosis pair must be covered. An insurer-specific rule
+  overrides global rules for that pair, including explicit denial. When absent,
+  global rules apply. Missing rules deny; denial wins conflicts within a scope.
+- Returns application/fhir+json OperationOutcome: 200 for successful
+  pre-validation, 422 for rejected input/coverage, and 503 for database failure.
+- Records success and denial audit events without storing the submitted patient
+  data. This operation neither persists the Claim nor submits it to NPHIES.
+
+The current code catalogs are keyed by code text only. They must be populated
+consistently; system/version membership validation needs a versioned terminology
+catalog. Multiple alternative service codings are rejected until mappings exist.
+Pre-validation is not insurer authorization or full NPHIES profile conformance.
+
+Run `python -m pytest test_claim_router.py -q` for isolated endpoint tests.
+
+## Terminology checks for /process-claim
+
+Diagnosis/service membership is checked against active, non-deleted
+NphiesTerminology rows in the supported clinical code systems. Unknown,
+inactive, or ambiguous entries return a FHIR OperationOutcome (HTTP 400).
+Valid codes without a coverage-rule mapping return HTTP 422.
+
+Coverage foreign keys still reference diagnosis_codes/service_codes; these
+tables only map validated codes to existing rules. Terminology IDs are never
+passed as rule foreign keys, and request handling creates no catalog rows.
+Insurer precedence and global fallback are unchanged.
+
+Run `alembic upgrade head` before deployment. Migration 0004 preserves a
+terminology table already created and populated by the seed script.
+A ValueSet referencing ICD-10-AM does not supply diagnosis concepts: the
+authoritative licensed code entries must also be imported.
+
+## Validation compatibility and arithmetic policy
+
+The legacy /process-claim endpoint retains HTTP 400 for unknown/inactive
+terminology for backward compatibility. /api/v1/claims/pre-validate returns
+HTTP 422 for terminology, clinical and financial validation failures. Both use
+FHIR OperationOutcome. Clients should inspect issue details rather than rely
+on HTTP status alone. Authentication/authorization retain 401/403.
+
+The FHIR rules adapter evaluates every item against its linked diagnoses and,
+under the current application policy, the principal diagnosis even when it is
+not explicitly linked. Every evaluated pair must be covered. This conservative
+policy is an application choice, not a claim of a universal NPHIES requirement.
+
+All financial arithmetic uses Decimal. Numeric factors are converted through
+their decimal spelling. There is no epsilon comparison or automatic rounding;
+fractional halalas are rejected. A future rounding policy must specify its
+rounding mode and stage explicitly before quantize is introduced.
+
+The synchronous coverage, terminology and audit helpers run through
+AsyncSession.run_sync; driver I/O is awaited by SQLAlchemy's greenlet bridge.
+Integration tests exercise real SQLAlchemy queries and audit writes with
+isolated SQLite/aiosqlite databases, not mocked coverage results. They do not
+replace PostgreSQL deployment tests.

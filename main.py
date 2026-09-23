@@ -1,15 +1,23 @@
+from contextlib import asynccontextmanager
 from uuid import uuid4
+from async_database import async_engine
+from claim_router import router as claim_router
 from scalar_fastapi import get_scalar_api_reference
 from fastapi import FastAPI, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from fastapi.exceptions import RequestValidationError
-from services.coverage import resolve_coverage
+from services.coverage import resolve_coverage_by_codes
+from services.terminology import (
+    DIAGNOSIS_SYSTEM,
+    SERVICE_SYSTEMS,
+    AmbiguousTerminologyError,
+    find_term,
+)
 from auth import router as auth_router, claim_access, AuthError
 from services.audit import add_event, record_failure
+from services.outcomes import generate_rejection
 
-# Import our models and schemas
-from models import DiagnosisCode, ServiceCode, DiagnosisServiceRule
 from schemas.claim import ClaimPayload, OperationOutcome, Issue, ClaimApproval
 
 from database import engine, SessionLocal, get_db
@@ -19,13 +27,24 @@ from database import engine, SessionLocal, get_db
 # Pin JavaScript independently of the scalar-fastapi Python package.
 SCALAR_JS_URL = "https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.68.0/dist/browser/standalone.js"
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        await async_engine.dispose()
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Claims Rule Engine API",
     docs_url=None,
     servers=[{"url": "/"}],
 )
 
 app.include_router(auth_router)
+app.include_router(claim_router)
 
 
 @app.middleware("http")
@@ -64,7 +83,7 @@ def authentication_error(request: Request, exc: AuthError):
         headers["WWW-Authenticate"] = "Bearer"
     return JSONResponse(
         status_code=exc.status_code,
-        content=outcome.model_dump(mode="json"),
+        content=outcome.model_dump(mode="json", exclude_none=True),
         media_type="application/fhir+json",
         headers=headers,
     )
@@ -84,21 +103,9 @@ async def custom_scalar_docs(request: Request):
     return response
 
 
-# Helper function to generate standardized error responses
-def generate_rejection(diagnostics: str, status_code: int = 422) -> JSONResponse:
-    outcome = OperationOutcome(
-        issue=[Issue(severity="error", code="business-rule", diagnostics=diagnostics)]
-    )
-    return JSONResponse(
-        status_code=status_code,
-        content=outcome.model_dump(mode="json"),
-        media_type="application/fhir+json",
-    )
-
-
 @app.exception_handler(RequestValidationError)
 def validation_error_handler(request: Request, exc: RequestValidationError):
-    if request.url.path == "/process-claim":
+    if request.url.path in {"/process-claim", "/api/v1/claims/pre-validate"}:
         reason = (
             "financial_invariant"
             if any(error["type"] == "financial_invariant" for error in exc.errors())
@@ -135,7 +142,9 @@ def validation_error_handler(request: Request, exc: RequestValidationError):
         issues.append(Issue(code=code, diagnostics=message))
     return JSONResponse(
         status_code=422,
-        content=OperationOutcome(issue=issues).model_dump(mode="json"),
+        content=OperationOutcome(issue=issues).model_dump(
+            mode="json", exclude_none=True
+        ),
         media_type="application/fhir+json",
     )
 
@@ -163,20 +172,31 @@ def process_claim(claim: ClaimPayload, request: Request, db: Session = Depends(g
         return generate_rejection(message, status_code)
 
     # Pydantic has already enforced the financial invariants.
-    diagnosis = (
-        db.query(DiagnosisCode)
-        .filter(DiagnosisCode.code == claim.diagnosis_code)
-        .first()
-    )
-    service = (
-        db.query(ServiceCode).filter(ServiceCode.code == claim.service_code).first()
-    )
+    try:
+        diagnosis = find_term(db, claim.diagnosis_code, (DIAGNOSIS_SYSTEM,))
+        service = find_term(db, claim.service_code, SERVICE_SYSTEMS)
+    except AmbiguousTerminologyError:
+        return reject(
+            "ambiguous_terminology",
+            "Code matches multiple active terminology entries; a unique coding is required.",
+            400,
+        )
     if diagnosis is None:
-        return reject("unknown_diagnosis", "Invalid Diagnosis Code.", 400)
+        return reject(
+            "unknown_diagnosis",
+            "Diagnosis code is not active in the NPHIES ICD-10-AM terminology.",
+            400,
+        )
     if service is None:
-        return reject("unknown_service", "Invalid Service Code.", 400)
+        return reject(
+            "unknown_service",
+            "Service code is not active in the supported NPHIES service terminology.",
+            400,
+        )
 
-    decision = resolve_coverage(db, diagnosis.id, service.id, claim.insurer_id)
+    decision = resolve_coverage_by_codes(
+        db, diagnosis.code, service.code, claim.insurer_id
+    )
     if decision is None:
         return reject(
             "no_coverage_rule", "No applicable coverage rule. Claim denied by default."
@@ -191,6 +211,6 @@ def process_claim(claim: ClaimPayload, request: Request, db: Session = Depends(g
     add_event(db, request, "claim.validation", "success", "approved", 200)
     db.commit()
     return ClaimApproval(
-        message=f"Claim approved for {service.description} with diagnosis {diagnosis.description}.",
+        message=f"Claim approved for {service.display or service.code} with diagnosis {diagnosis.display or diagnosis.code}.",
         net_payable=claim.net_payable,
     )

@@ -16,6 +16,7 @@ from testing_auth import provider_headers
 from models import (
     Base,
     DiagnosisCode,
+    NphiesTerminology,
     ServiceCode,
     InsuranceCompany,
     DiagnosisServiceRule,
@@ -42,6 +43,30 @@ def database() -> Iterator[sessionmaker[Session]]:
                 DiagnosisCode(id=2, code="J00", description="Unrelated diagnosis"),
                 ServiceCode(id=1, code="70450", description="Test service"),
                 ServiceCode(id=2, code="OTHER", description="Unrelated service"),
+                NphiesTerminology(
+                    id=101,
+                    code_system_url="http://hl7.org/fhir/sid/icd-10-am",
+                    code="G43",
+                    display="Official test diagnosis",
+                ),
+                NphiesTerminology(
+                    id=102,
+                    code_system_url="http://hl7.org/fhir/sid/icd-10-am",
+                    code="J00",
+                    display="Other diagnosis",
+                ),
+                NphiesTerminology(
+                    id=201,
+                    code_system_url="http://nphies.sa/terminology/CodeSystem/procedures",
+                    code="70450",
+                    display="Official test service",
+                ),
+                NphiesTerminology(
+                    id=202,
+                    code_system_url="http://nphies.sa/terminology/CodeSystem/services",
+                    code="OTHER",
+                    display="Other service",
+                ),
                 InsuranceCompany(id=1, name="Test insurer 1"),
                 InsuranceCompany(id=2, name="Test insurer 2"),
             ]

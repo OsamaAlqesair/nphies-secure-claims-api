@@ -388,3 +388,12 @@ class AuditLog(Base):
 
     def restore(self):
         raise ValueError("Audit records are append-only.")
+class NphiesTerminology(Base):
+    __tablename__ = "nphies_terminology"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code_system_url = Column(String, index=True) 
+    code = Column(String, index=True)            
+    display = Column(String)                     
+    definition = Column(String, nullable=True)   
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
