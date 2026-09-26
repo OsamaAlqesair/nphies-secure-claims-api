@@ -13,6 +13,11 @@ from services.terminology import (
     AmbiguousTerminologyError,
 )
 from services.coverage import resolve_coverage_by_codes
+from services.diagnosis_catalog import (
+    DiagnosisCatalogMissingError,
+    MISSING_CATALOG_CODE,
+    MISSING_CATALOG_MESSAGE,
+)
 
 
 def rejection(
@@ -126,6 +131,12 @@ def evaluate(db: Session, submission: ClaimSubmission) -> list[Issue]:
                         )
                     )
                     continue
+            except DiagnosisCatalogMissingError:
+                issue = rejection(
+                    MISSING_CATALOG_CODE, MISSING_CATALOG_MESSAGE, ["Claim.diagnosis"]
+                )
+                issue.code = "not-found"
+                return [issue]
             except AmbiguousTerminologyError:
                 issues.append(
                     rejection(

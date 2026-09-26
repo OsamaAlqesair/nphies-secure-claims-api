@@ -112,3 +112,23 @@ def test_migration_preserves_preseeded_table(monkeypatch):
             )
     finally:
         engine.dispose()
+
+
+def test_missing_diagnosis_catalog_has_distinct_outcome(client, database, payload):
+    from sqlalchemy import update
+    from diagnosis_systems import ICD10_AM_SYSTEM
+
+    with database() as db:
+        db.execute(
+            update(NphiesTerminology)
+            .where(NphiesTerminology.code_system_url == ICD10_AM_SYSTEM)
+            .values(is_deleted=True)
+        )
+        db.commit()
+    response = client.post("/process-claim", json=payload)
+    assert response.status_code == 503
+    assert response.json()["resourceType"] == "OperationOutcome"
+    issue = response.json()["issue"][0]
+    assert issue["code"] == "not-found"
+    assert issue["diagnostics"] == "ICD-10-AM terminology catalog is not loaded."
+    assert issue["details"]["coding"][0]["code"] == "icd10_am_catalog_missing"

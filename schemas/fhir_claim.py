@@ -30,14 +30,13 @@ from schemas.fhir_types import (
 )
 from schemas.fhir_resources import Coverage, Organization, Patient, Practitioner
 from service_systems import ServiceSystem
+from diagnosis_systems import ICD10AMSystem, ICD10_AM_SYSTEM
 
 TAX_URL = "http://nphies.sa/fhir/ksa/nphies-fs/StructureDefinition/extension-tax"
 
 
 class DiagnosisCoding(Coding):
-    system: Literal["http://hl7.org/fhir/sid/icd-10-am"] = (
-        "http://hl7.org/fhir/sid/icd-10-am"
-    )
+    system: ICD10AMSystem = ICD10_AM_SYSTEM
     code: Annotated[
         str, Field(strict=True, pattern=r"^[A-Z][0-9]{2}(?:\.[0-9]{1,2})?$")
     ] = Field(

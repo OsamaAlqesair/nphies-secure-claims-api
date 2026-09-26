@@ -13,6 +13,7 @@ from schemas.claim import OperationOutcome, Issue
 from services.outcomes import generate_rejection
 from services.audit import add_event
 from services.claim_validation import validate_coverage
+from services.diagnosis_catalog import MISSING_CATALOG_CODE
 
 
 class FHIRResponse(JSONResponse):
@@ -55,6 +56,11 @@ async def pre_validate_claim(
     try:
         issues = await validate_coverage(db, submission)
         status = 422 if issues else 200
+        if any(
+            issue.details["coding"][0]["code"] == MISSING_CATALOG_CODE
+            for issue in issues
+        ):
+            status = 503
         # Keep the audit helper inside the same async-to-sync bridge as queries.
         await db.run_sync(
             add_event,
@@ -84,6 +90,7 @@ async def pre_validate_claim(
         issue = issues[0]
         return generate_rejection(
             issue.diagnostics,
+            status_code=status,
             reason=issue.details["coding"][0]["code"],
             code=issue.code,
             expression=issue.expression,

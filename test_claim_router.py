@@ -484,3 +484,26 @@ def test_factor_decimal_exactness_and_one_halala_difference(context, payload):
     item["net"]["value"] = "299.98"
     payload["claim"]["total"]["value"] = "299.98"
     assert outcome(client.post(PATH, json=payload), 422)[0]["code"] == "invariant"
+
+
+def test_missing_diagnosis_catalog_fhir_gate(context, payload):
+    from sqlalchemy import update
+    from diagnosis_systems import ICD10_AM_SYSTEM
+
+    client, sessions = context
+    rule(sessions, True)
+    with sessions() as db:
+        db.execute(
+            update(NphiesTerminology)
+            .where(NphiesTerminology.code_system_url == ICD10_AM_SYSTEM)
+            .values(is_deleted=True)
+        )
+        db.commit()
+    issues = outcome(client.post(PATH, json=payload), 503)
+    assert issues[0]["diagnostics"] == "ICD-10-AM terminology catalog is not loaded."
+    assert issues[0]["code"] == "not-found"
+    assert issues[0]["details"]["coding"][0]["code"] == "icd10_am_catalog_missing"
+    with sessions() as db:
+        audit = db.scalar(select(AuditLog))
+        assert audit.reason == "icd10_am_catalog_missing"
+        assert audit.http_status == 503

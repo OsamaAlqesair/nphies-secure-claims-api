@@ -17,6 +17,11 @@ from services.terminology import (
 from auth import router as auth_router, claim_access, AuthError
 from services.audit import add_event, record_failure
 from services.outcomes import generate_rejection
+from services.diagnosis_catalog import (
+    DiagnosisCatalogMissingError,
+    MISSING_CATALOG_CODE,
+    MISSING_CATALOG_MESSAGE,
+)
 
 from schemas.claim import ClaimPayload, OperationOutcome, Issue, ClaimApproval
 
@@ -162,7 +167,7 @@ def validation_error_handler(request: Request, exc: RequestValidationError):
                 }
             },
         }
-        for status in (400, 401, 403, 422)
+        for status in (400, 401, 403, 422, 503)
     },
 )
 def process_claim(claim: ClaimPayload, request: Request, db: Session = Depends(get_db)):
@@ -175,6 +180,12 @@ def process_claim(claim: ClaimPayload, request: Request, db: Session = Depends(g
     try:
         diagnosis = find_term(db, claim.diagnosis_code, (DIAGNOSIS_SYSTEM,))
         service = find_term(db, claim.service_code, SERVICE_SYSTEMS)
+    except DiagnosisCatalogMissingError:
+        add_event(db, request, "claim.validation", "failure", MISSING_CATALOG_CODE, 503)
+        db.commit()
+        return generate_rejection(
+            MISSING_CATALOG_MESSAGE, 503, reason=MISSING_CATALOG_CODE, code="not-found"
+        )
     except AmbiguousTerminologyError:
         return reject(
             "ambiguous_terminology",
