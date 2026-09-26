@@ -12,7 +12,11 @@ from services.terminology import (
     SERVICE_SYSTEMS,
     AmbiguousTerminologyError,
 )
-from services.coverage import resolve_coverage_by_codes
+from services.coverage import (
+    COVERAGE_FAILURES,
+    CoverageStatus,
+    resolve_coverage_by_codes,
+)
 from services.diagnosis_catalog import (
     DiagnosisCatalogMissingError,
     MISSING_CATALOG_CODE,
@@ -152,22 +156,14 @@ def evaluate(db: Session, submission: ClaimSubmission) -> list[Issue]:
                     db, diagnosis.code, service.code, insurer_id
                 )
             decision = decisions[key]
-            if decision is None:
-                issues.append(
-                    rejection(
-                        "no_coverage_rule",
-                        "No applicable coverage rule. Claim denied by default.",
-                        location,
+            if not decision.is_covered:
+                reason, message = COVERAGE_FAILURES[decision.status]
+                if decision.status is CoverageStatus.DENIED:
+                    message = (
+                        f"Medical Necessity Denied: item {item.sequence}, "
+                        f"service {service.code}, diagnosis {diagnosis.code}."
                     )
-                )
-            elif not decision.is_covered:
-                issues.append(
-                    rejection(
-                        "medical_necessity",
-                        f"Medical Necessity Denied: item {item.sequence}, service {service.code}, diagnosis {diagnosis.code}.",
-                        location,
-                    )
-                )
+                issues.append(rejection(reason, message, location))
     return issues
 
 

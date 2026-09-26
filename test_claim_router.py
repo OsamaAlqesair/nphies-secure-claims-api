@@ -507,3 +507,25 @@ def test_missing_diagnosis_catalog_fhir_gate(context, payload):
         audit = db.scalar(select(AuditLog))
         assert audit.reason == "icd10_am_catalog_missing"
         assert audit.http_status == 503
+
+
+@pytest.mark.parametrize(
+    "model,reason",
+    [
+        (DiagnosisCode, "diagnosis_mapping_missing"),
+        (ServiceCode, "service_mapping_missing"),
+    ],
+)
+def test_mapping_failure_has_distinct_public_reason(context, payload, model, reason):
+    client, sessions = context
+    rule(sessions, True)
+    with sessions() as db:
+        db.get(model, 1).soft_delete()
+        db.commit()
+    response = client.post(PATH, json=payload)
+    issues = outcome(response, 422)
+    assert issues[0]["details"]["coding"][0]["code"] == reason
+    for internal in ("matched_rule_ids", "diagnosis_id", "service_id", "insurer_id"):
+        assert internal not in response.text
+    with sessions() as db:
+        assert db.scalar(select(AuditLog)).reason == reason

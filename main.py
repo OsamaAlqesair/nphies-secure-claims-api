@@ -7,7 +7,7 @@ from fastapi import FastAPI, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from fastapi.exceptions import RequestValidationError
-from services.coverage import resolve_coverage_by_codes
+from services.coverage import COVERAGE_FAILURES, resolve_coverage_by_codes
 from services.terminology import (
     DIAGNOSIS_SYSTEM,
     SERVICE_SYSTEMS,
@@ -171,10 +171,18 @@ def validation_error_handler(request: Request, exc: RequestValidationError):
     },
 )
 def process_claim(claim: ClaimPayload, request: Request, db: Session = Depends(get_db)):
-    def reject(reason: str, message: str, status_code: int = 422):
+    def reject(
+        reason: str,
+        message: str,
+        status_code: int = 422,
+        *,
+        public_reason: bool = False,
+    ):
         add_event(db, request, "claim.validation", "failure", reason, status_code)
         db.commit()
-        return generate_rejection(message, status_code)
+        return generate_rejection(
+            message, status_code, reason=reason if public_reason else None
+        )
 
     # Pydantic has already enforced the financial invariants.
     try:
@@ -208,17 +216,9 @@ def process_claim(claim: ClaimPayload, request: Request, db: Session = Depends(g
     decision = resolve_coverage_by_codes(
         db, diagnosis.code, service.code, claim.insurer_id
     )
-    if decision is None:
-        return reject(
-            "no_coverage_rule", "No applicable coverage rule. Claim denied by default."
-        )
     if not decision.is_covered:
-        scope = (
-            f"Insurer ID {decision.insurer_id}"
-            if decision.insurer_id is not None
-            else "Global Fallback Policy"
-        )
-        return reject("medical_necessity", f"Medical Necessity Denied under {scope}.")
+        reason, message = COVERAGE_FAILURES[decision.status]
+        return reject(reason, message, public_reason=True)
     add_event(db, request, "claim.validation", "success", "approved", 200)
     db.commit()
     return ClaimApproval(

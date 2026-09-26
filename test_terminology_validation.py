@@ -52,7 +52,10 @@ def test_valid_terminology_without_rule_mapping_denies(client, database, payload
     payload[kind + "_code"] = "NEW"
     response = client.post("/process-claim", json=payload)
     assert response.status_code == 422
-    assert "No applicable coverage rule" in response.json()["issue"][0]["diagnostics"]
+    assert (
+        response.json()["issue"][0]["details"]["coding"][0]["code"]
+        == kind + "_mapping_missing"
+    )
 
 
 @pytest.mark.parametrize("same_system", [True, False])

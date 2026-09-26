@@ -29,7 +29,7 @@ from models import (
     ServiceCode,
     DiagnosisServiceRule,
 )
-from services.coverage import resolve_coverage
+from services.coverage import CoverageStatus, resolve_coverage
 from migrate_sqlite import import_legacy
 
 
@@ -196,7 +196,10 @@ def test_deleted_rules_cannot_approve_claim(warehouse):
         assert resolve_coverage(session, diagnosis.id, service.id, None).is_covered
         rule.soft_delete()
         session.commit()
-        assert resolve_coverage(session, diagnosis.id, service.id, None) is None
+        assert (
+            resolve_coverage(session, diagnosis.id, service.id, None).status
+            is CoverageStatus.NO_APPLICABLE_RULE
+        )
 
 
 def test_initial_migration_matches_models(monkeypatch):
