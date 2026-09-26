@@ -3,17 +3,9 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from models import NphiesTerminology
+from service_systems import SERVICE_SYSTEMS
 
 DIAGNOSIS_SYSTEM = "http://hl7.org/fhir/sid/icd-10-am"
-SERVICE_SYSTEMS = (
-    "http://nphies.sa/terminology/CodeSystem/services",
-    "http://nphies.sa/terminology/CodeSystem/procedures",
-    "http://nphies.sa/terminology/CodeSystem/laboratory",
-    "http://nphies.sa/terminology/CodeSystem/imaging",
-    "http://nphies.sa/terminology/CodeSystem/oral-health-ip",
-    "http://nphies.sa/terminology/CodeSystem/oral-health-op",
-    "http://nphies.sa/terminology/CodeSystem/medication-codes",
-)
 
 
 class AmbiguousTerminologyError(ValueError):

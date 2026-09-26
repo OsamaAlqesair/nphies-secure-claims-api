@@ -253,14 +253,9 @@ def test_currency(payload):
         ClaimSubmission.model_validate(payload)
 
 
-def test_cpt_intake(payload):
+def test_cpt_intake_rejected(payload):
     payload["claim"]["item"][0]["productOrService"] = concept(
         "http://www.ama-assn.org/go/cpt", "70450"
     )
-    assert (
+    with pytest.raises(ValidationError):
         ClaimSubmission.model_validate(payload)
-        .claim.item[0]
-        .productOrService.coding[0]
-        .code
-        == "70450"
-    )

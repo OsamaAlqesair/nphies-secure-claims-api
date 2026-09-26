@@ -2,7 +2,7 @@
 
 No meta.profile conformance is asserted. Production submission additionally
 requires the selected NPHIES profile, terminology validation, Encounter,
-MessageHeader, and a message Bundle. CPT acceptance here is not NPHIES approval.
+MessageHeader, and a message Bundle. CPT is not currently supported.
 Sources:
 https://portal.nphies.sa/ig/usecases.html
 https://portal.nphies.sa/ig/StructureDefinition-claim-base.html
@@ -29,6 +29,7 @@ from schemas.fhir_types import (
     URI,
 )
 from schemas.fhir_resources import Coverage, Organization, Patient, Practitioner
+from service_systems import ServiceSystem
 
 TAX_URL = "http://nphies.sa/fhir/ksa/nphies-fs/StructureDefinition/extension-tax"
 
@@ -56,13 +57,8 @@ class ClaimDiagnosis(FHIRModel):
 
 
 class ServiceCoding(Coding):
-    system: Literal[
-        "http://nphies.sa/terminology/CodeSystem/services",
-        "http://nphies.sa/terminology/CodeSystem/procedures",
-        "http://nphies.sa/terminology/CodeSystem/laboratory",
-        "http://www.ama-assn.org/go/cpt",
-    ] = Field(
-        description="Supported subset of SBS systems, or CPT for internal intake."
+    system: ServiceSystem = Field(
+        description="Supported NPHIES service coding system; CPT is not supported."
     )
     code: Annotated[
         str, Field(strict=True, min_length=1, max_length=32, pattern=r"^[A-Za-z0-9-]+$")
