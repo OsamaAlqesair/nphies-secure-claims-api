@@ -5,7 +5,9 @@ from claim_router import router as claim_router
 from scalar_fastapi import get_scalar_api_reference
 from fastapi import FastAPI, Depends, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+from models import InsuranceCompany
 from fastapi.exceptions import RequestValidationError
 from services.coverage import COVERAGE_FAILURES, resolve_coverage_by_codes
 from services.terminology import (
@@ -212,6 +214,22 @@ def process_claim(claim: ClaimPayload, request: Request, db: Session = Depends(g
             "Service code is not active in the supported NPHIES service terminology.",
             400,
         )
+
+    # A supplied internal ID must resolve before global fallback can be considered.
+    # InsuranceCompany has no active/status flag; soft deletion defines availability.
+    if claim.insurer_id is not None:
+        insurer_id = db.scalar(
+            select(InsuranceCompany.id).where(
+                InsuranceCompany.id == claim.insurer_id,
+                InsuranceCompany.is_deleted.is_(False),
+            )
+        )
+        if insurer_id is None:
+            return reject(
+                "unknown_insurer",
+                "Insurer ID does not identify an available insurance company.",
+                public_reason=True,
+            )
 
     decision = resolve_coverage_by_codes(
         db, diagnosis.code, service.code, claim.insurer_id

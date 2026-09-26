@@ -365,3 +365,61 @@ def test_openapi_describes_fhir_errors_and_decimal_strings(client):
         assert "application/fhir+json" in content
         assert "application/json" not in content
     assert "HTTPValidationError" not in document["components"]["schemas"]
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+@pytest.mark.parametrize("global_approval", [False, True])
+def test_invalid_supplied_insurer_never_reaches_coverage(
+    client, database, payload, add_rule, monkeypatch, deleted, global_approval
+):
+    import main
+    from sqlalchemy import select
+    from models import AuditLog
+
+    if global_approval:
+        add_rule(None, True)
+    if deleted:
+        with database() as db:
+            db.get(InsuranceCompany, 1).soft_delete()
+            db.commit()
+    else:
+        payload["insurer_id"] = 999999
+
+    def forbidden_resolution(*args, **kwargs):
+        pytest.fail(
+            "Invalid supplied insurer must not reach coverage or global fallback."
+        )
+
+    monkeypatch.setattr(main, "resolve_coverage_by_codes", forbidden_resolution)
+    response = client.post("/process-claim", json=payload)
+    assert_outcome(response, status=422, code="business-rule")
+    issue = response.json()["issue"][0]
+    assert issue["details"]["coding"][0] == {
+        "system": "urn:nphies-secure-claim-api:validation",
+        "code": "unknown_insurer",
+    }
+    with database() as db:
+        audit = db.scalar(select(AuditLog).where(AuditLog.action == "claim.validation"))
+        assert audit.reason == "unknown_insurer"
+        assert audit.outcome == "failure"
+        assert audit.http_status == 422
+
+
+@pytest.mark.parametrize("insurer", [1, None, "omitted"])
+def test_valid_or_omitted_insurer_reaches_coverage(
+    client, payload, add_rule, monkeypatch, insurer
+):
+    import main
+    from unittest.mock import Mock
+
+    add_rule(None, True)
+    if insurer == "omitted":
+        del payload["insurer_id"]
+    else:
+        payload["insurer_id"] = insurer
+    resolver = Mock(wraps=main.resolve_coverage_by_codes)
+    monkeypatch.setattr(main, "resolve_coverage_by_codes", resolver)
+    response = client.post("/process-claim", json=payload)
+    assert response.status_code == 200
+    resolver.assert_called_once()
+    assert resolver.call_args.args[3] == (None if insurer == "omitted" else insurer)
