@@ -97,6 +97,7 @@ def isolated_client():
                 DiagnosisCode(id=1, code="G43", description="Synthetic diagnosis"),
                 ServiceCode(id=1, code="70450", description="Synthetic service"),
                 InsuranceCompany(id=1, name="Synthetic insurer"),
+                InsuranceCompany(id=2, name="Synthetic fallback insurer"),
                 DiagnosisServiceRule(
                     diagnosis_id=1, service_id=1, insurer_id=None, is_covered=True
                 ),
