@@ -3,6 +3,7 @@
 import pytest
 from sqlalchemy import create_engine, select, event
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import OperationalError
 from models import (
     Base,
     DiagnosisCode,
@@ -157,11 +158,20 @@ def test_deleted_mapping_rejected(sessions, model):
     assert not any(states(sessions).values())
 
 
-def test_commit_failure_rolls_back_and_redacts(sessions, capsys):
+@pytest.mark.parametrize("sqlalchemy_error", [False, True])
+def test_commit_failure_rolls_back_and_redacts(
+    sessions, capsys, caplog, sqlalchemy_error
+):
     with sessions() as db:
         engine = db.get_bind()
 
     def fail(connection):
+        if sqlalchemy_error:
+            raise OperationalError(
+                "PRIVATE_SQL",
+                {"secret": "PRIVATE_PARAMETER"},
+                RuntimeError("PRIVATE_SENTINEL"),
+            )
         raise RuntimeError("PRIVATE_SENTINEL")
 
     event.listen(engine, "commit", fail)
@@ -171,7 +181,15 @@ def test_commit_failure_rolls_back_and_redacts(sessions, capsys):
         event.remove(engine, "commit", fail)
     assert not any(states(sessions).values())
     output = capsys.readouterr().out
-    assert "PRIVATE_SENTINEL" not in output
+    assert "PRIVATE_" not in output + caplog.text
+    records = [r for r in caplog.records if r.name == "update_rule"]
+    assert len(records) == int(sqlalchemy_error)
+    if records:
+        assert (
+            records[0].getMessage()
+            == "coverage_rule_cli_database_failed exception_type=OperationalError"
+        )
+        assert records[0].exc_info is None and records[0].stack_info is None
     assert "Success:" not in output
     assert "Failure:" in output
     with sessions() as db:

@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 import unicodedata
+import logging
 
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -17,17 +18,22 @@ from models import (
     User,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class CoverageMutationError(ValueError):
     """Fixed public-safe diagnostic; never include database exception details."""
 
 
 def validate_reason(reason: str | None) -> str:
-    if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
+    if not isinstance(reason, str):
+        raise CoverageMutationError("Reason must contain 1-500 nonblank characters.")
+    reason = reason.strip()
+    if not reason or len(reason) > 500:
         raise CoverageMutationError("Reason must contain 1-500 nonblank characters.")
     if any(unicodedata.category(char).startswith("C") for char in reason):
         raise CoverageMutationError("Reason must not contain control characters.")
-    return reason.strip()
+    return reason
 
 
 @dataclass(frozen=True)
@@ -65,7 +71,11 @@ def lock_coverage_mutations(db: Session) -> None:
                     "diagnosis_service_rules IN SHARE ROW EXCLUSIVE MODE"
                 )
             )
-        except SQLAlchemyError:
+        except SQLAlchemyError as exc:
+            # Only controlled codes and exception types; never exception text/tracebacks.
+            logger.error(
+                "coverage_mutation_lock_failed exception_type=%s", type(exc).__name__
+            )
             raise CoverageMutationError(
                 "Coverage mutation lock could not be acquired."
             ) from None
@@ -151,7 +161,10 @@ def update_rule_coverage(
             db.add(history)
         db.flush()
         return True
-    except SQLAlchemyError:
+    except SQLAlchemyError as exc:
+        logger.error(
+            "coverage_mutation_update_failed exception_type=%s", type(exc).__name__
+        )
         raise CoverageMutationError(
             "Coverage update failed; caller must roll back the transaction."
         ) from None

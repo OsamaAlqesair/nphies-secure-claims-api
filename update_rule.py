@@ -3,9 +3,11 @@
 import argparse
 from collections.abc import Callable
 import json
+import logging
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 from models import DiagnosisCode, ServiceCode, InsuranceCompany, DiagnosisServiceRule
 from services.coverage_mutations import (
@@ -15,6 +17,8 @@ from services.coverage_mutations import (
     update_rule_coverage,
     validate_reason,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TargetError(ValueError):
@@ -160,7 +164,13 @@ def main(
     except (TargetError, CoverageMutationError) as exc:
         print("Failure: " + str(exc))
         return 1
-    except Exception:
+    except Exception as exc:
+        if isinstance(exc, SQLAlchemyError):
+            # Covers target queries/commit failures; service failures are already logged.
+            logger.error(
+                "coverage_rule_cli_database_failed exception_type=%s",
+                type(exc).__name__,
+            )
         print(
             "Failure: database operation did not complete; transaction rolled back. "
             "Exception details suppressed."

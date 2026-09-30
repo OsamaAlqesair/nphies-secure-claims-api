@@ -27,6 +27,7 @@ from services.coverage_mutations import (
     CoverageMutationError,
     MutationContext,
     update_rule_coverage,
+    validate_reason,
 )
 from test_terminology_identity import postgres_engine
 from update_rule import main
@@ -191,7 +192,10 @@ def test_unchanged_does_not_add_history(history_db, capsys):
     assert "Unchanged:" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("reason", [None, "", "   ", "\t", "x" * 501, "line\nbreak"])
+@pytest.mark.parametrize(
+    "reason",
+    [None, "", "   ", "\t\n ", "x" * 501, "  " + "x" * 501 + "  ", "line\nbreak"],
+)
 def test_apply_reason_rejected_before_connect(reason, capsys):
     def forbidden():
         pytest.fail("Invalid reason must never connect.")
@@ -204,7 +208,7 @@ def test_apply_reason_rejected_before_connect(reason, capsys):
     assert exc.value.code == 2
 
 
-def test_history_insert_failure_rolls_back_cli(history_db, capsys):
+def test_history_insert_failure_rolls_back_cli(history_db, capsys, caplog):
     with history_db() as db:
         engine = db.bind
 
@@ -222,6 +226,14 @@ def test_history_insert_failure_rolls_back_cli(history_db, capsys):
     assert not covered(history_db) and history(history_db) == []
     output = capsys.readouterr().out
     assert "PRIVATE_SENTINEL" not in output and "Success:" not in output
+    records = [r for r in caplog.records if r.name == "services.coverage_mutations"]
+    assert len(records) == 1
+    assert (
+        records[0].getMessage()
+        == "coverage_mutation_update_failed exception_type=IntegrityError"
+    )
+    assert records[0].exc_info is None and records[0].stack_info is None
+    assert "PRIVATE_SENTINEL" not in caplog.text
 
 
 def test_outer_rollback_removes_both(history_db):
@@ -373,3 +385,47 @@ def test_concurrent_updates_record_only_actual_change(history_db):
     assert len(rows) == 1
     assert rows[0].old_is_covered is False and rows[0].new_is_covered is True
     assert covered(history_db)
+
+
+@pytest.mark.parametrize(
+    "raw, normalized",
+    [
+        ("  Synthetic review  ", "Synthetic review"),
+        (" \t" + "x" * 500 + "\n ", "x" * 500),
+    ],
+)
+def test_reason_normalized_before_validation_and_persisted(history_db, raw, normalized):
+    assert validate_reason(raw) == normalized
+    assert MutationContext(reason=raw).reason == normalized
+    args = cli_args() + ["--apply", "--reason", raw]
+    assert main(args, session_factory=history_db) == 0
+    assert history(history_db)[0].reason == normalized
+
+
+@pytest.mark.parametrize("history_db", ["postgresql"], indirect=True)
+def test_lock_failure_logging_is_safe(history_db, capsys, caplog):
+    with history_db() as db:
+        engine = db.bind
+
+    def reject(connection, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("LOCK TABLE"):
+            raise sa.exc.OperationalError(
+                "PRIVATE_SQL",
+                {"secret": "PRIVATE_PARAMETER"},
+                RuntimeError("PRIVATE_CREDENTIAL"),
+            )
+
+    sa.event.listen(engine, "before_cursor_execute", reject)
+    try:
+        assert main(apply_args(), session_factory=history_db) == 1
+    finally:
+        sa.event.remove(engine, "before_cursor_execute", reject)
+    assert not covered(history_db) and history(history_db) == []
+    records = [r for r in caplog.records if r.name == "services.coverage_mutations"]
+    assert len(records) == 1
+    assert (
+        records[0].getMessage()
+        == "coverage_mutation_lock_failed exception_type=OperationalError"
+    )
+    assert records[0].exc_info is None and records[0].stack_info is None
+    assert "PRIVATE_" not in caplog.text + capsys.readouterr().out
