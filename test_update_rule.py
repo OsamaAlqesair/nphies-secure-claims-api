@@ -9,6 +9,7 @@ from models import (
     ServiceCode,
     InsuranceCompany,
     DiagnosisServiceRule,
+    CoverageRuleHistory,
 )
 from update_rule import main
 
@@ -61,6 +62,8 @@ def args(scope=None):
         "TEST-S",
         "--covered",
         "true",
+        "--reason",
+        "Synthetic rule review",
         *(scope or ["--insurer-id", "1"]),
     ]
 
@@ -171,6 +174,8 @@ def test_commit_failure_rolls_back_and_redacts(sessions, capsys):
     assert "PRIVATE_SENTINEL" not in output
     assert "Success:" not in output
     assert "Failure:" in output
+    with sessions() as db:
+        assert db.scalars(select(CoverageRuleHistory)).all() == []
 
 
 @pytest.mark.parametrize(

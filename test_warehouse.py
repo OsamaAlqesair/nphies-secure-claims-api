@@ -108,6 +108,11 @@ def entities(session):
 
 def test_all_entities_have_nonnullable_audit_columns():
     for table in Base.metadata.tables.values():
+        if table.name == "coverage_rule_history":
+            assert not table.c.occurred_at.nullable
+            assert table.c.occurred_at.server_default is not None
+            assert not {"is_deleted", "created_at", "updated_at"} & set(table.c.keys())
+            continue
         for column in ("is_deleted", "created_at", "updated_at"):
             assert not table.c[column].nullable
             assert table.c[column].server_default is not None
@@ -225,7 +230,7 @@ def test_postgres_migration_compiles_with_timestamp_triggers():
     assert "TIMESTAMP WITH TIME ZONE" in sql
     assert "fk_claim_coverage_parties" in sql
     assert sql.count("EXECUTE FUNCTION nphies_audit_update()") == len(
-        Base.metadata.tables
+        [t for t in Base.metadata.tables.values() if "updated_at" in t.c]
     )
 
 

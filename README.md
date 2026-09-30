@@ -332,3 +332,42 @@ AsyncSession.run_sync; driver I/O is awaited by SQLAlchemy's greenlet bridge.
 Integration tests exercise real SQLAlchemy queries and audit writes with
 isolated SQLite/aiosqlite databases, not mocked coverage results. They do not
 replace PostgreSQL deployment tests.
+
+
+## Coverage rule mutation history (Phase 10A-1)
+
+Migration `0006_coverage_rule_history` follows `0005_terminology_identity`.
+It adds append-only history without changing coverage precedence, adding rule
+uniqueness, modifying existing rules, or fabricating past events. Apply the
+migration before running the updated rule CLI. Automatic destructive downgrade
+is refused to preserve audit history.
+
+The CLI remains dry-run by default:
+
+```powershell
+python update_rule.py --diagnosis-code TEST-D --service-code TEST-S --global --covered true
+python update_rule.py --diagnosis-code TEST-D --service-code TEST-S --global --covered true --apply --reason "Reviewed coverage decision"
+```
+
+Use actual existing mapping codes when operating the utility. Apply requires a
+nonblank reason of at most 500 characters, without control characters. Never
+include credentials or patient information. Source is fixed to `update_rule.py`;
+the CLI does not authenticate an application user, so the actor remains NULL.
+An unchanged value creates no history. Rule updates and history commit together;
+an audit insertion failure rolls back the rule update.
+
+History captures rule identity, diagnosis/service codes, insurer name, old/new
+coverage and deletion state, reason, source, optional trusted actor and timestamp.
+User references restrict physical deletion; disabling and soft-deleting users
+remain possible. PostgreSQL rejects history UPDATE, DELETE and TRUNCATE; isolated
+SQLite tests have UPDATE/DELETE triggers. History has no soft-delete lifecycle.
+Database owners can disable protections; this is not tamper-proof storage against
+privileged administrators.
+
+Phase 10A-2 remains required: seed and legacy-import integration, audited
+CREATE/SOFT_DELETE/RESTORE operations, restore-conflict checks, and rule direct-write
+guards. Those paths remain unaudited in this phase. Only UPDATE is emitted by the
+current service; the history schema reserves all four action transitions.
+The only currently accepted history source is `update_rule.py`; later writer
+integration must explicitly extend the controlled source constraint.
+Claim audit events still do not preserve decision-time rule snapshots.

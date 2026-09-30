@@ -8,6 +8,13 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from models import DiagnosisCode, ServiceCode, InsuranceCompany, DiagnosisServiceRule
+from services.coverage_mutations import (
+    CoverageMutationError,
+    MutationContext,
+    lock_coverage_mutations,
+    update_rule_coverage,
+    validate_reason,
+)
 
 
 class TargetError(ValueError):
@@ -36,7 +43,16 @@ def main(
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--reason", help="Required for --apply; no credentials or patient data."
+    )
     args = parser.parse_args(argv)
+    if args.apply:
+        try:
+            args.reason = validate_reason(args.reason)
+        except CoverageMutationError as exc:
+            parser.error(str(exc))
+    changed = False
 
     try:
         if session_factory is None:
@@ -51,13 +67,7 @@ def main(
                     if args.apply:
                         # No uniqueness constraint exists. Serialize writes during this
                         # short maintenance transaction, including concurrent inserts.
-                        db.execute(
-                            text(
-                                "LOCK TABLE diagnosis_codes, service_codes, "
-                                "insurance_companies, diagnosis_service_rules "
-                                "IN SHARE ROW EXCLUSIVE MODE"
-                            )
-                        )
+                        lock_coverage_mutations(db)
                     else:
                         db.execute(text("SET TRANSACTION READ ONLY"))
 
@@ -126,15 +136,28 @@ def main(
                     )
                 )
                 if args.apply:
-                    rule.is_covered = intended
+                    changed = update_rule_coverage(
+                        db,
+                        rule.id,
+                        intended,
+                        context=MutationContext(
+                            reason=args.reason,
+                            source="update_rule.py",
+                            actor_user_id=None,
+                        ),
+                    )
             # Reached only after a successful transaction commit.
         print(
-            "Success: exact rule update committed."
+            (
+                "Success: exact rule update and history committed."
+                if changed
+                else "Unchanged: no mutation or history created."
+            )
             if args.apply
             else "Dry-run: no changes applied."
         )
         return 0
-    except TargetError as exc:
+    except (TargetError, CoverageMutationError) as exc:
         print("Failure: " + str(exc))
         return 1
     except Exception:

@@ -14,6 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
     ForeignKeyConstraint,
     event,
+    DDL,
     false,
     func,
 )
@@ -58,7 +59,7 @@ def filter_deleted(state):
     if (
         state.is_update
         and state.bind_mapper is not None
-        and state.bind_mapper.class_ is AuditLog
+        and state.bind_mapper.class_ in (AuditLog, CoverageRuleHistory)
     ):
         raise ValueError("Audit records are append-only.")
     if state.is_delete:
@@ -76,7 +77,7 @@ def filter_deleted(state):
 @event.listens_for(Session, "before_flush")
 def preserve_deleted_rows(session, context, instances):
     for obj in list(session.dirty) + list(session.deleted):
-        if isinstance(obj, AuditLog) and (
+        if isinstance(obj, (AuditLog, CoverageRuleHistory)) and (
             obj in session.deleted or session.is_modified(obj)
         ):
             raise ValueError("Audit records are append-only.")
@@ -388,6 +389,8 @@ class AuditLog(Base):
 
     def restore(self):
         raise ValueError("Audit records are append-only.")
+
+
 class NphiesTerminology(Base):
     __tablename__ = "nphies_terminology"
     __table_args__ = (
@@ -397,6 +400,85 @@ class NphiesTerminology(Base):
     id = Column(Integer, primary_key=True, index=True)
     code_system_url = Column(String, nullable=False, index=True)
     code = Column(String, nullable=False, index=True)
-    display = Column(String)                     
-    definition = Column(String, nullable=True)   
+    display = Column(String)
+    definition = Column(String, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+
+
+# History shares migration metadata, but has no mutable audit/soft-delete mixin.
+HistoryBase = declarative_base(metadata=Base.metadata)
+
+
+class CoverageRuleHistory(HistoryBase):
+    __tablename__ = "coverage_rule_history"
+
+    id = Column(Integer, primary_key=True)
+    rule_id = Column(
+        ForeignKey("diagnosis_service_rules.id", ondelete="RESTRICT"), nullable=False
+    )
+    action = Column(String(16), nullable=False)
+    diagnosis_id = Column(Integer, nullable=False)
+    service_id = Column(Integer, nullable=False)
+    insurer_id = Column(Integer)
+    diagnosis_code = Column(String, nullable=False)
+    service_code = Column(String, nullable=False)
+    insurer_name = Column(String)
+    old_is_covered = Column(Boolean)
+    new_is_covered = Column(Boolean, nullable=False)
+    old_is_deleted = Column(Boolean)
+    new_is_deleted = Column(Boolean, nullable=False)
+    actor_user_id = Column(ForeignKey("users.id", ondelete="RESTRICT"))
+    source = Column(String(64), nullable=False)
+    reason = Column(String(500), nullable=False)
+    occurred_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('CREATE', 'UPDATE', 'SOFT_DELETE', 'RESTORE')",
+            name="ck_rule_history_action",
+        ),
+        CheckConstraint("source = 'update_rule.py'", name="ck_rule_history_source"),
+        CheckConstraint(
+            "length(trim(reason)) > 0 AND length(reason) <= 500",
+            name="ck_rule_history_reason",
+        ),
+        CheckConstraint(
+            "(insurer_id IS NULL AND insurer_name IS NULL) OR "
+            "(insurer_id IS NOT NULL AND insurer_name IS NOT NULL)",
+            name="ck_rule_history_scope",
+        ),
+        CheckConstraint(
+            "(action = 'CREATE' AND old_is_covered IS NULL AND old_is_deleted IS NULL) OR "
+            "(action <> 'CREATE' AND old_is_covered IS NOT NULL AND old_is_deleted IS NOT NULL AND ("
+            "(action = 'UPDATE' AND old_is_deleted = false AND new_is_deleted = false AND old_is_covered <> new_is_covered) OR "
+            "(action = 'SOFT_DELETE' AND old_is_deleted = false AND new_is_deleted = true AND old_is_covered = new_is_covered) OR "
+            "(action = 'RESTORE' AND old_is_deleted = true AND new_is_deleted = false AND old_is_covered = new_is_covered)))",
+            name="ck_rule_history_transition",
+        ),
+        Index("ix_rule_history_rule_id_id", "rule_id", "id"),
+        Index("ix_rule_history_occurred_at", "occurred_at"),
+    )
+
+    def soft_delete(self):
+        raise ValueError("Audit records are append-only.")
+
+    def restore(self):
+        raise ValueError("Audit records are append-only.")
+
+
+# create_all() is used by isolated SQLite fixtures. Production uses Alembic.
+for operation in ("UPDATE", "DELETE"):
+    event.listen(
+        CoverageRuleHistory.__table__,
+        "after_create",
+        DDL(
+            f"CREATE TRIGGER prevent_rule_history_{operation.lower()} "
+            f"BEFORE {operation} ON coverage_rule_history BEGIN "
+            "SELECT RAISE(ABORT, 'Coverage rule history is append-only'); END"
+        ).execute_if(dialect="sqlite"),
+    )
