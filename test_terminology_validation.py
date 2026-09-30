@@ -2,6 +2,7 @@
 
 import pytest
 from sqlalchemy import select, create_engine
+from sqlalchemy.exc import IntegrityError
 from models import NphiesTerminology, DiagnosisCode, ServiceCode
 from services.terminology import DIAGNOSIS_SYSTEM, SERVICE_SYSTEMS
 from test_main import database, client, payload, add_rule
@@ -71,10 +72,16 @@ def test_ambiguous_code_denied(client, database, payload, add_rule, same_system)
                 ),
             )
         )
-        db.commit()
+        if same_system:
+            with pytest.raises(IntegrityError):
+                db.commit()
+            db.rollback()
+        else:
+            db.commit()
     response = client.post("/process-claim", json=payload)
-    assert response.status_code == 400
-    assert response.json()["resourceType"] == "OperationOutcome"
+    assert response.status_code == (200 if same_system else 400)
+    if not same_system:
+        assert response.json()["resourceType"] == "OperationOutcome"
 
 
 @pytest.mark.parametrize("model", [DiagnosisCode, ServiceCode])

@@ -14,6 +14,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from diagnosis_systems import ICD10AMSystem, ICD10_AM_SYSTEM
 from models import NphiesTerminology
@@ -156,7 +157,12 @@ def import_dataset(
             if not dry_run:
                 report.inserted = len(pending)
                 report.would_insert = 0
+    except IntegrityError:
+        report.inserted = report.would_insert = 0
+        report.failed = max(len(dataset.concepts) - report.existing, 1)
+        report.diagnostic = "Terminology insertion constraint conflict; entire import rolled back. No changes applied."
     except Exception:
+        report.would_insert = 0
         report.inserted = 0
         report.failed = max(len(dataset.concepts) - report.existing, 1)
         report.diagnostic = "Database import failed. Verify connection and required migrations; exception details suppressed."

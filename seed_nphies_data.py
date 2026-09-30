@@ -7,6 +7,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from models import NphiesTerminology
 
@@ -169,7 +170,7 @@ def seed_terminologies(
                 report.inserted += pending
                 report.existing += existing
                 report.code_system_files_processed += 1
-        except Exception:
+        except Exception as exc:
             # Existing rows were observed, not inserted; rollback does not change
             # them. Pending/unexamined candidates failed. An otherwise empty
             # failure is counted once as a file-level error.
@@ -177,7 +178,11 @@ def seed_terminologies(
             report.failed += max(len(candidates) - existing, 1)
             report.file_errors += 1
             print(
-                "CodeSystem transaction failed and was rolled back; details suppressed."
+                (
+                    "CodeSystem insertion constraint conflict; transaction rolled back; details suppressed."
+                    if isinstance(exc, IntegrityError)
+                    else "CodeSystem transaction failed and was rolled back; details suppressed."
+                )
             )
 
     if not report.code_system_files_discovered and not report.failed:

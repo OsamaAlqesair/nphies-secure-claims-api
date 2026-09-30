@@ -219,7 +219,10 @@ def test_current_migration_schema_supports_importer(monkeypatch, synthetic_file)
     monkeypatch.setattr(database, "engine", engine)
     try:
         config = Config("alembic.ini")
-        assert ScriptDirectory.from_config(config).get_current_head() == "0004_terminology"
+        assert (
+            ScriptDirectory.from_config(config).get_current_head()
+            == "0005_terminology_identity"
+        )
         command.upgrade(config, "head")
         assert "version" not in {
             column["name"]

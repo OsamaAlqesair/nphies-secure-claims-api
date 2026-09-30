@@ -50,10 +50,11 @@ release metadata from a licensed dataset merely to bypass this restriction.
 
 ## Schema compatibility
 
-No version column or new migration is required. The importer and readiness checks
-use the existing terminology schema at migration 0004_terminology. Version storage,
-release selection and terminology uniqueness semantics are deferred until the
-approved dataset and release policy are known. Apply currently supports only
+No version column is required. Migration 0005_terminology_identity adds non-null
+identity fields and full-history system/code uniqueness; it must be applied after
+a separately authorized duplicate/NULL audit. See TERMINOLOGY_IDENTITY.md.
+Version storage and release selection remain deferred until the approved dataset
+and release policy are known. Apply currently supports only
 approved inputs without version metadata.
 
 ## Test-only data
