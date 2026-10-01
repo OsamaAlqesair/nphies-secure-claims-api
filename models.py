@@ -443,7 +443,7 @@ class CoverageRuleHistory(HistoryBase):
             name="ck_rule_history_action",
         ),
         CheckConstraint(
-            "source IN ('update_rule.py', 'coverage_mutations.py')",
+            "source IN ('update_rule.py', 'coverage_mutations.py', 'seed.py', 'migrate_sqlite.py')",
             name="ck_rule_history_source",
         ),
         CheckConstraint(

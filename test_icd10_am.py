@@ -221,7 +221,7 @@ def test_current_migration_schema_supports_importer(monkeypatch, synthetic_file)
         config = Config("alembic.ini")
         assert (
             ScriptDirectory.from_config(config).get_current_head()
-            == "0007_coverage_history_sources"
+            == "0008_coverage_writer_sources"
         )
         command.upgrade(config, "head")
         assert "version" not in {

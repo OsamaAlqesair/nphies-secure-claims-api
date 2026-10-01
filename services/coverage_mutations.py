@@ -1,6 +1,7 @@
 """Caller-owned, transactionally audited coverage updates and lifecycle mutations."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 import unicodedata
 import logging
@@ -43,14 +44,21 @@ def validate_reason(reason: str | None) -> str:
 @dataclass(frozen=True)
 class MutationContext:
     reason: str
-    source: Literal["update_rule.py", "coverage_mutations.py"] = "update_rule.py"
+    source: Literal[
+        "update_rule.py", "coverage_mutations.py", "seed.py", "migrate_sqlite.py"
+    ] = "update_rule.py"
     # Only trusted application callers may supply an authenticated actor.
     # The current CLI always leaves this NULL.
     actor_user_id: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reason", validate_reason(self.reason))
-        if self.source not in ("update_rule.py", "coverage_mutations.py"):
+        if self.source not in (
+            "update_rule.py",
+            "coverage_mutations.py",
+            "seed.py",
+            "migrate_sqlite.py",
+        ):
             raise CoverageMutationError("Unsupported mutation source.")
         if self.actor_user_id is not None and (
             type(self.actor_user_id) is not int or self.actor_user_id <= 0
@@ -270,7 +278,9 @@ def _lifecycle_history(
         old_is_covered=None if action == "CREATE" else rule.is_covered,
         new_is_covered=rule.is_covered,
         old_is_deleted=old_is_deleted,
-        new_is_deleted=action == "SOFT_DELETE",
+        new_is_deleted=(
+            rule.is_deleted if action == "CREATE" else action == "SOFT_DELETE"
+        ),
         actor_user_id=context.actor_user_id,
         source=context.source,
         reason=context.reason,
@@ -324,6 +334,83 @@ def create_rule(
         return rule
     except SQLAlchemyError as exc:
         raise _lifecycle_failure("create", exc) from None
+
+
+_IMPORT_TIMESTAMP_UNSET = object()
+
+
+def _import_timestamp(value, *, postgres: bool) -> datetime | str:
+    # sqlite3 reads legacy timestamp columns as strings. Preserve their instant
+    # and timezone where supplied, rather than replacing them with import time.
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            # The previous Core importer delegated parsing to PostgreSQL, which
+            # also accepts non-ISO legacy formats. Retain that behavior using
+            # bound parameters; invalid values fail with sanitized diagnostics.
+            if postgres:
+                return value
+    raise CoverageMutationError("Imported rule timestamp is invalid.")
+
+
+def import_rule(
+    db: Session,
+    rule_id: int,
+    diagnosis_id: int,
+    service_id: int,
+    is_covered: bool,
+    *,
+    insurer_id: int | None = None,
+    is_deleted: bool = False,
+    created_at=_IMPORT_TIMESTAMP_UNSET,
+    updated_at=_IMPORT_TIMESTAMP_UNSET,
+    context: MutationContext,
+) -> DiagnosisServiceRule:
+    """Create a destination row from faithful legacy state, not a new policy.
+
+    Explicit IDs and deletion state are retained, including references to deleted
+    mappings. The CREATE event describes destination import NOW; supplied source
+    timestamps belong only to the rule row. No past lifecycle events are invented.
+    Caller owns the transaction and must roll it back if this operation fails.
+    """
+    context = _prepare_lifecycle(db, context)
+    if type(rule_id) is not int:
+        raise CoverageMutationError("An explicit imported rule ID is required.")
+    if type(is_covered) is not bool or type(is_deleted) is not bool:
+        raise CoverageMutationError("Imported rule state must contain booleans.")
+    timestamps = {
+        name: _import_timestamp(
+            value, postgres=db.get_bind().dialect.name == "postgresql"
+        )
+        for name, value in (("created_at", created_at), ("updated_at", updated_at))
+        if value is not _IMPORT_TIMESTAMP_UNSET
+    }
+    try:
+        with db.no_autoflush:
+            lock_coverage_mutations(db)
+            mappings = _lifecycle_mappings(
+                db, diagnosis_id, service_id, insurer_id, require_current=False
+            )
+            _validate_lifecycle_actor(db, context)
+            rule = DiagnosisServiceRule(
+                id=rule_id,
+                diagnosis_id=diagnosis_id,
+                service_id=service_id,
+                insurer_id=insurer_id,
+                is_covered=is_covered,
+                is_deleted=is_deleted,
+                **timestamps,
+            )
+            db.add(rule)
+            db.flush()
+            db.add(_lifecycle_history(rule, mappings, "CREATE", None, context))
+            db.flush()
+        return rule
+    except SQLAlchemyError as exc:
+        raise _lifecycle_failure("import", exc) from None
 
 
 def _change_rule_lifecycle(
