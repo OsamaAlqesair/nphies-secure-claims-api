@@ -1,4 +1,4 @@
-"""Test-only historical setup using Phase 2B's still-open Core boundary.
+"""Test-only historical setup with exact, single-use Core authorization.
 
 No ORM listener is removed or authorized. Each helper issues one exact payload
 on a fixture-owned Connection, leaving history append-only protections enabled.
@@ -12,6 +12,10 @@ from weakref import WeakKeyDictionary
 
 import sqlalchemy as sa
 from models import DiagnosisServiceRule
+from services.coverage_write_guards import (
+    register_coverage_engine,
+    _historical_execution,
+)
 
 _owners = WeakKeyDictionary()
 _containers = WeakKeyDictionary()
@@ -21,6 +25,7 @@ _containers = WeakKeyDictionary()
 def owned_sqlite(engine):
     if engine.dialect.name != "sqlite":
         raise ValueError("Fixture-owned SQLite required.")
+    register_coverage_engine(engine)
     with engine.connect() as connection:
         databases = connection.exec_driver_sql("PRAGMA database_list").all()
     if any(name not in ("main", "temp") or filename for _, name, filename in databases):
@@ -99,6 +104,7 @@ def owned_postgres_schema(engine, root, schema):
         r"(?:history|writer|guard)_test_[0-9a-f]{32}", schema
     ):
         raise ValueError("Fixture-owned PostgreSQL schema required.")
+    register_coverage_engine(engine)
     with engine.connect() as connection:
         if (
             connection.scalar(
@@ -146,7 +152,9 @@ def historical_row(connection, **payload):
         DiagnosisServiceRule.__table__.columns.keys()
     ):
         raise ValueError("Exact fixture rule payload required.")
-    return connection.execute(DiagnosisServiceRule.__table__.insert().values(**payload))
+    statement = DiagnosisServiceRule.__table__.insert()
+    with _historical_execution(connection, statement, payload):
+        return connection.execute(statement, payload)
 
 
 def historical_rules(db, *rules):
@@ -177,11 +185,12 @@ def historical_change(db, rule, **values):
         raise ValueError("Exact fixture Session and rule required.")
     if not values or not set(values).issubset({"is_covered", "is_deleted"}):
         raise ValueError("Unsupported historical setup operation.")
-    connection.execute(
-        DiagnosisServiceRule.__table__.update()
-        .where(DiagnosisServiceRule.id == rule.id)
-        .values(**values)
+    statement = DiagnosisServiceRule.__table__.update().where(
+        DiagnosisServiceRule.id == sa.bindparam("diagnosis_service_rules_id")
     )
+    payload = {**values, "diagnosis_service_rules_id": rule.id}
+    with _historical_execution(connection, statement, payload):
+        connection.execute(statement, payload)
     db.expire(rule)
 
 

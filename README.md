@@ -371,3 +371,18 @@ current service; the history schema reserves all four action transitions.
 The only currently accepted history source is `update_rule.py`; later writer
 integration must explicitly extend the controlled source constraint.
 Claim audit events still do not preserve decision-time rule snapshots.
+
+## Coverage write boundary (Phase 10A-2B-2B)
+
+Coverage rule changes use the audited create/import/update/soft-delete/restore
+services. Project sync and async Engines reject structured rule DML without the
+corresponding one-use mapper authorization, including ordinary legacy bulk writes.
+Session textual SQL requires a bounded registration for a reviewed runtime template.
+Disposable historical fixtures use exact test-only authorization.
+
+This prevents ordinary application bypasses while preserving stock ORM persistence.
+It does not authenticate ORM origin against matching Core SQL injected inside the
+mapper authorization window. Hostile same-process Python, Connection raw/driver
+SQL, raw DBAPI, independently created unguarded Engines, listener removal and
+privileged external clients are outside the boundary. Connection raw SQL remains
+an administrative/internal API and must not be used for application rule writes.

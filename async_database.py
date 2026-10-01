@@ -3,6 +3,7 @@
 from collections.abc import AsyncIterator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from database import url
+from services.coverage_write_guards import register_coverage_engine
 
 # Psycopg 3 supports both sync and async engines. SQLite is only for tests.
 async_url = (
@@ -17,6 +18,7 @@ async_engine = create_async_engine(
         {} if async_url.get_backend_name() == "sqlite" else {"connect_timeout": 5}
     ),
 )
+register_coverage_engine(async_engine.sync_engine)
 AsyncSessionLocal = async_sessionmaker(
     async_engine,
     autoflush=False,

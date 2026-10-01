@@ -41,13 +41,13 @@ def lifecycle_db(history_db):
     # so CREATE exercises generated IDs rather than collisions with those seeds.
     with history_db.begin() as db:
         if db.bind.dialect.name == "postgresql":
-            db.execute(
+            db.connection().execute(
                 sa.text(
                     "SELECT setval(pg_get_serial_sequence('diagnosis_service_rules', 'id'), "
                     "(SELECT max(id) FROM diagnosis_service_rules))"
                 )
             )
-            db.execute(
+            db.connection().execute(
                 sa.text(
                     "SELECT setval(pg_get_serial_sequence('users', 'id'), "
                     "(SELECT max(id) FROM users))"
@@ -515,7 +515,7 @@ def test_postgres_concurrent_restores(lifecycle_db, scope, same_rule):
                     .execution_options(include_deleted=True)
                 )
                 assert cached.is_deleted is True
-                db.execute(sa.text("SET LOCAL lock_timeout = '8s'"))
+                db.connection().execute(sa.text("SET LOCAL lock_timeout = '8s'"))
                 barrier.wait(timeout=10)
                 restore_rule(db, rule_id, context=context())
             return "success"
@@ -585,7 +585,7 @@ def test_postgres_lock_released_after_failure(lifecycle_db, failure):
     def proceed():
         assert locked.wait(timeout=10)
         with lifecycle_db.begin() as db:
-            db.execute(sa.text("SET LOCAL lock_timeout = '8s'"))
+            db.connection().execute(sa.text("SET LOCAL lock_timeout = '8s'"))
             attempted.set()
             create_rule(db, 1, 1, False, context=context())
         return "success"

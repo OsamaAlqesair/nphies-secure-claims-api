@@ -5,9 +5,10 @@ from collections.abc import Callable
 import json
 import logging
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from services.coverage_write_guards import _execute_session_text
 
 from models import DiagnosisCode, ServiceCode, InsuranceCompany, DiagnosisServiceRule
 from services.coverage_mutations import (
@@ -73,7 +74,7 @@ def main(
                         # short maintenance transaction, including concurrent inserts.
                         lock_coverage_mutations(db)
                     else:
-                        db.execute(text("SET TRANSACTION READ ONLY"))
+                        _execute_session_text(db, "read_only")
 
                 def mapping(model, condition, label):
                     matches = db.scalars(

@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
+from services.coverage_write_guards import register_coverage_engine
 
 load_dotenv(Path(__file__).with_name(".env"))
 DATABASE_URL = os.environ.get(
@@ -25,6 +26,7 @@ engine = create_engine(
         else {"connect_timeout": 5}
     ),
 )
+register_coverage_engine(engine)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 

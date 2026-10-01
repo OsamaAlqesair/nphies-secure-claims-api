@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from services.coverage_write_guards import _execute_session_text
 
 from diagnosis_systems import ICD10AMSystem, ICD10_AM_SYSTEM
 from models import NphiesTerminology
@@ -108,11 +109,12 @@ def import_dataset(
             with db.begin():
                 if db.get_bind().dialect.name == "postgresql":
                     if dry_run:
-                        db.execute(text("SET TRANSACTION READ ONLY"))
+                        _execute_session_text(db, "read_only")
                     else:
                         # Serialize runs of this importer without changing catalog data.
-                        db.execute(
-                            text("SELECT pg_advisory_xact_lock(hashtext(:system))"),
+                        _execute_session_text(
+                            db,
+                            "icd_advisory",
                             {"system": ICD10_AM_SYSTEM},
                         )
                 rows = db.scalars(

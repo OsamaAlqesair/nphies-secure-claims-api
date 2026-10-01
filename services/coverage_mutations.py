@@ -6,13 +6,14 @@ from typing import Literal
 import unicodedata
 import logging
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from services.coverage_write_guards import (
     CoverageMutationError,
     _audited_service,
     _authorize,
+    _execute_session_text,
 )
 
 from models import (
@@ -76,12 +77,7 @@ def lock_coverage_mutations(db: Session) -> None:
         raise CoverageMutationError("An active caller-owned transaction is required.")
     if db.get_bind().dialect.name == "postgresql":
         try:
-            db.execute(
-                text(
-                    "LOCK TABLE diagnosis_codes, service_codes, insurance_companies, "
-                    "diagnosis_service_rules IN SHARE ROW EXCLUSIVE MODE"
-                )
-            )
+            _execute_session_text(db, "coverage_lock")
         except SQLAlchemyError as exc:
             # Only controlled codes and exception types; never exception text/tracebacks.
             logger.error(
