@@ -120,6 +120,7 @@ def history_db(request, monkeypatch):
                 connection.scalar(sa.text("SELECT version_num FROM alembic_version"))
                 == "0006_coverage_rule_history"
             )
+        command.upgrade(cfg, "head")
         yield factory
     finally:
         engine.dispose()

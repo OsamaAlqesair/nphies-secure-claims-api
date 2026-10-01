@@ -442,7 +442,10 @@ class CoverageRuleHistory(HistoryBase):
             "action IN ('CREATE', 'UPDATE', 'SOFT_DELETE', 'RESTORE')",
             name="ck_rule_history_action",
         ),
-        CheckConstraint("source = 'update_rule.py'", name="ck_rule_history_source"),
+        CheckConstraint(
+            "source IN ('update_rule.py', 'coverage_mutations.py')",
+            name="ck_rule_history_source",
+        ),
         CheckConstraint(
             "length(trim(reason)) > 0 AND length(reason) <= 500",
             name="ck_rule_history_reason",
