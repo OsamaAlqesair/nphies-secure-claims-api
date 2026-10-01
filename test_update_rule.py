@@ -18,11 +18,23 @@ from update_rule import main
 
 
 @pytest.fixture
-def sessions():
+def sessions(request, monkeypatch):
     engine = create_engine("sqlite://")
     ownership = ExitStack()
     ownership.enter_context(owned_sqlite(engine))
-    Base.metadata.create_all(engine)
+    # The ambiguity case deliberately exercises a schema before identity indexes.
+    if (
+        getattr(request.node, "callspec", None)
+        and request.node.callspec.params.get("kind") == "duplicate"
+    ):
+        from alembic import command
+        from alembic.config import Config
+        import database
+
+        monkeypatch.setattr(database, "engine", engine)
+        command.upgrade(Config("alembic.ini"), "0008_coverage_writer_sources")
+    else:
+        Base.metadata.create_all(engine)
     factory = sessionmaker(engine)
     with factory.begin() as db:
         db.add_all(

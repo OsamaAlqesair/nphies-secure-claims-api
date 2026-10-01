@@ -30,6 +30,8 @@ def context():
 def guarded(writer_db):
     mappings(writer_db)
     with writer_db.begin() as db:
+        db.add(ServiceCode(id=18, code="UNUSED-S", description="Synthetic"))
+    with writer_db.begin() as db:
         rule = mutations.create_rule(db, 7, 8, False, context=context())
         other = mutations.create_rule(db, 7, 8, False, insurer_id=9, context=context())
     return writer_db, rule.id, other.id
@@ -298,9 +300,9 @@ def test_incomplete_history_rejects_commit_until_rollback(
             change.setattr(Session, "add", fail_history)
             with pytest.raises(RuntimeError, match="after rule SQL"):
                 if operation == "create":
-                    mutations.create_rule(db, 7, 8, True, context=context())
+                    mutations.create_rule(db, 7, 18, True, context=context())
                 else:
-                    mutations.import_rule(db, 99, 7, 8, True, context=context())
+                    mutations.import_rule(db, 99, 7, 18, True, context=context())
         assert db not in guards._permits and db not in guards._entries
         with pytest.raises(CoverageMutationError, match="incomplete"):
             db.commit()
@@ -321,7 +323,7 @@ def test_incomplete_history_rejects_commit_until_rollback(
             connection.close()
     assert counts(factory) == (2, 2)
     with factory.begin() as fresh:
-        mutations.create_rule(fresh, 7, 8, True, context=context())
+        mutations.create_rule(fresh, 7, 18, True, context=context())
     assert counts(factory) == (3, 3)
 
 
@@ -401,7 +403,7 @@ def test_joined_session_close_preserves_incomplete_obligation(guarded, monkeypat
             with monkeypatch.context() as change:
                 change.setattr(Session, "add", fail)
                 with pytest.raises(RuntimeError):
-                    mutations.create_rule(db, 7, 8, True, context=context())
+                    mutations.create_rule(db, 7, 18, True, context=context())
         assert connection.in_transaction()
         with pytest.raises(CoverageMutationError, match="incomplete"):
             connection.commit()
@@ -461,7 +463,9 @@ def test_test_setup_keeps_history_append_only(guarded):
         db.begin()
         historical_rules(
             db,
-            DiagnosisServiceRule(id=90, diagnosis_id=7, service_id=8, is_covered=True),
+            DiagnosisServiceRule(
+                id=90, diagnosis_id=7, service_id=8, is_covered=True, is_deleted=True
+            ),
         )
         history = db.scalar(
             sa.select(CoverageRuleHistory).where(CoverageRuleHistory.rule_id == rule_id)
@@ -581,7 +585,7 @@ def test_permit_cannot_cross_mapper_connections(guarded, routed_model):
         with Session(bind=factory.kw["bind"], binds={routed_model: other}) as db:
             db.begin()
             with pytest.raises(CoverageMutationError):
-                mutations.create_rule(db, 7, 8, True, context=context())
+                mutations.create_rule(db, 7, 18, True, context=context())
             db.rollback()
         with other.connect() as connection:
             assert (

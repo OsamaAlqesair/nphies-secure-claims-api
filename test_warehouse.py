@@ -239,7 +239,7 @@ def test_initial_migration_matches_models(monkeypatch):
 def test_postgres_migration_compiles_with_timestamp_triggers():
     output = StringIO()
     config = Config("alembic.ini", output_buffer=output)
-    command.upgrade(config, "head", sql=True)
+    command.upgrade(config, "0008_coverage_writer_sources", sql=True)
     sql = output.getvalue()
     assert "JSONB" in sql
     assert "TIMESTAMP WITH TIME ZONE" in sql

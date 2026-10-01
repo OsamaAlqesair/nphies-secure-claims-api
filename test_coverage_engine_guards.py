@@ -293,7 +293,7 @@ def test_mapper_rejects_inline_multi_values(guarded, size):
     sa.event.listen(DiagnosisServiceRule, "before_insert", before)
     try:
         with factory.begin() as db:
-            mutations.create_rule(db, 7, 8, True, context=context())
+            mutations.create_rule(db, 7, 18, True, context=context())
     finally:
         sa.event.remove(DiagnosisServiceRule, "before_insert", before)
     assert attempted == [True]
@@ -350,7 +350,13 @@ def test_historical_execution_exact_statement_payload_and_connection(guarded):
     engine = factory.kw["bind"]
     table = DiagnosisServiceRule.__table__
     statement = table.insert()
-    payload = {"id": 91, "diagnosis_id": 7, "service_id": 8, "is_covered": True}
+    payload = {
+        "id": 91,
+        "diagnosis_id": 7,
+        "service_id": 8,
+        "is_covered": True,
+        "is_deleted": True,
+    }
     other_engine = sa.create_engine(URL.create("sqlite"))
     guards.register_coverage_engine(other_engine)
     try:
@@ -506,7 +512,7 @@ def test_async_engine_and_audited_services(writer_db):
                 )
                 await db.run_sync(
                     lambda sync: mutations.import_rule(
-                        sync, 99, 7, 8, True, context=context()
+                        sync, 99, 7, 8, True, is_deleted=True, context=context()
                     )
                 )
             for kind in ("insert", "update", "delete"):
@@ -523,9 +529,17 @@ def test_async_engine_and_audited_services(writer_db):
             async with factory() as db:
                 assert (
                     await db.scalar(
-                        sa.select(sa.func.count()).select_from(DiagnosisServiceRule)
+                        sa.select(sa.func.count())
+                        .select_from(DiagnosisServiceRule)
+                        .execution_options(include_deleted=True)
                     )
                     == 2
+                )
+                assert (
+                    await db.scalar(
+                        sa.select(sa.func.count()).select_from(DiagnosisServiceRule)
+                    )
+                    == 1
                 )
         finally:
             await engine.dispose()

@@ -32,7 +32,7 @@ PATH = "/api/v1/claims/pre-validate"
 
 
 @pytest.fixture
-def context(tmp_path):
+def context(tmp_path, request, monkeypatch):
     path = tmp_path / "claims.sqlite"
     engine = create_engine(
         "sqlite:///" + path.as_posix(), connect_args={"check_same_thread": False}
@@ -46,8 +46,19 @@ def context(tmp_path):
         def enable_fk(connection, _):
             connection.execute("PRAGMA foreign_keys=ON")
 
-    Base.metadata.create_all(engine)
-    sessions = sessionmaker(engine, expire_on_commit=False)
+    pre_identity = getattr(request, "param", None) == "0008_coverage_writer_sources"
+    if pre_identity:
+        from alembic import command
+        from alembic.config import Config
+        import database
+
+        monkeypatch.setattr(database, "engine", engine)
+        command.upgrade(Config("alembic.ini"), "0008_coverage_writer_sources")
+    else:
+        Base.metadata.create_all(engine)
+    sessions = sessionmaker(
+        engine, expire_on_commit=False, info={"pre_identity": pre_identity}
+    )
     async_sessions = async_sessionmaker(async_engine, expire_on_commit=False)
     with sessions() as db:
         db.add(
@@ -116,6 +127,21 @@ def context(tmp_path):
 
 def rule(sessions, covered, insurer=None, diagnosis=1, service=1, deleted=False):
     with sessions() as db:
+        if db.info.get("pre_identity"):
+            # Only this explicitly pre-0009 fixture can hold malformed current peers.
+            assert (
+                db.connection()
+                .exec_driver_sql("SELECT version_num FROM alembic_version")
+                .scalar()
+                == "0008_coverage_writer_sources"
+            )
+            db.connection().exec_driver_sql(
+                "INSERT INTO diagnosis_service_rules "
+                "(diagnosis_id, service_id, insurer_id, is_covered, is_deleted) VALUES (?, ?, ?, ?, ?)",
+                (diagnosis, service, insurer, covered, deleted),
+            )
+            db.commit()
+            return
         audited_rule(
             db,
             DiagnosisServiceRule(
@@ -177,6 +203,7 @@ def test_precedence(context, payload, specific, global_rule, expected):
 
 @pytest.mark.parametrize("scope", [None, 42])
 @pytest.mark.parametrize("order", [(True, False), (False, True)])
+@pytest.mark.parametrize("context", ["0008_coverage_writer_sources"], indirect=True)
 def test_denial_wins_conflict(context, payload, scope, order):
     client, sessions = context
     for value in order:

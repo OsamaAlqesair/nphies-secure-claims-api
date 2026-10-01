@@ -5,9 +5,10 @@ from datetime import datetime
 from typing import Literal
 import unicodedata
 import logging
+import sqlite3
 
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from services.coverage_write_guards import (
     CoverageMutationError,
@@ -291,7 +292,67 @@ def _lifecycle_history(
     )
 
 
+_CURRENT_IDENTITY_INDEXES = frozenset(
+    (
+        "uq_diagnosis_service_rule_current_global",
+        "uq_diagnosis_service_rule_current_insurer",
+    )
+)
+
+
+def _current_peer(db, diagnosis_id, service_id, insurer_id):
+    scope = (
+        DiagnosisServiceRule.insurer_id.is_(None)
+        if insurer_id is None
+        else DiagnosisServiceRule.insurer_id == insurer_id
+    )
+    return db.scalar(
+        select(DiagnosisServiceRule.id)
+        .where(
+            DiagnosisServiceRule.diagnosis_id == diagnosis_id,
+            DiagnosisServiceRule.service_id == service_id,
+            DiagnosisServiceRule.is_deleted.is_(False),
+            scope,
+        )
+        .limit(1)
+        .execution_options(include_deleted=True)
+    )
+
+
+def _is_identity_violation(exc):
+    if not isinstance(exc, IntegrityError):
+        return False
+    original = exc.orig
+    if getattr(original, "sqlstate", None) == "23505":
+        return (
+            getattr(getattr(original, "diag", None), "constraint_name", None)
+            in _CURRENT_IDENTITY_INDEXES
+        )
+    # SQLite reports column signatures rather than these index names. Never echo
+    # its message; unknown signatures (including other UNIQUE keys) stay generic.
+    return (
+        isinstance(original, sqlite3.IntegrityError)
+        and getattr(original, "sqlite_errorcode", None)
+        == sqlite3.SQLITE_CONSTRAINT_UNIQUE
+        and str(original)
+        in (
+            "UNIQUE constraint failed: diagnosis_service_rules.diagnosis_id, "
+            "diagnosis_service_rules.service_id",
+            "UNIQUE constraint failed: diagnosis_service_rules.diagnosis_id, "
+            "diagnosis_service_rules.service_id, diagnosis_service_rules.insurer_id",
+        )
+    )
+
+
+def _identity_conflict(action):
+    return CoverageMutationError(
+        "Another current rule has the same identity.", code=f"rule_{action}_conflict"
+    )
+
+
 def _lifecycle_failure(action: str, exc: SQLAlchemyError) -> CoverageMutationError:
+    if action in ("create", "restore", "import") and _is_identity_violation(exc):
+        return _identity_conflict(action)
     logger.error(
         "coverage_mutation_%s_failed exception_type=%s", action, type(exc).__name__
     )
@@ -310,7 +371,7 @@ def create_rule(
     insurer_id: int | None = None,
     context: MutationContext,
 ) -> DiagnosisServiceRule:
-    """Create a current rule and CREATE event; duplicate identities are permitted.
+    """Create a current rule and CREATE event only when its identity is available.
 
     Caller MUST let errors escape its transaction block and finish the transaction.
     The generated ID is available on the returned rule; this function never commits.
@@ -325,6 +386,8 @@ def create_rule(
                 db, diagnosis_id, service_id, insurer_id, require_current=True
             )
             _validate_lifecycle_actor(db, context)
+            if _current_peer(db, diagnosis_id, service_id, insurer_id) is not None:
+                raise _identity_conflict("create")
             rule = DiagnosisServiceRule(
                 diagnosis_id=diagnosis_id,
                 service_id=service_id,
@@ -404,6 +467,11 @@ def import_rule(
                 db, diagnosis_id, service_id, insurer_id, require_current=False
             )
             _validate_lifecycle_actor(db, context)
+            if (
+                not is_deleted
+                and _current_peer(db, diagnosis_id, service_id, insurer_id) is not None
+            ):
+                raise _identity_conflict("import")
             rule = DiagnosisServiceRule(
                 id=rule_id,
                 diagnosis_id=diagnosis_id,

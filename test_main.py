@@ -26,7 +26,7 @@ from schemas.claim import ClaimPayload
 
 
 @pytest.fixture
-def database() -> Iterator[sessionmaker[Session]]:
+def database(request, monkeypatch) -> Iterator[sessionmaker[Session]]:
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -35,8 +35,24 @@ def database() -> Iterator[sessionmaker[Session]]:
     def foreign_keys(connection, _):
         connection.execute("PRAGMA foreign_keys=ON")
 
-    Base.metadata.create_all(engine)
-    sessions = sessionmaker(engine, expire_on_commit=False)
+    from contextlib import ExitStack
+    from testing_coverage import owned_sqlite
+
+    ownership = ExitStack()
+    pre_identity = getattr(request, "param", None) == "0008_coverage_writer_sources"
+    if pre_identity:
+        from alembic import command
+        from alembic.config import Config
+        import database as database_module
+
+        ownership.enter_context(owned_sqlite(engine))
+        monkeypatch.setattr(database_module, "engine", engine)
+        command.upgrade(Config("alembic.ini"), "0008_coverage_writer_sources")
+    else:
+        Base.metadata.create_all(engine)
+    sessions = sessionmaker(
+        engine, expire_on_commit=False, info={"pre_identity": pre_identity}
+    )
     with sessions() as db:
         db.add_all(
             [
@@ -76,6 +92,7 @@ def database() -> Iterator[sessionmaker[Session]]:
     try:
         yield sessions
     finally:
+        ownership.close()
         engine.dispose()
 
 
@@ -101,7 +118,10 @@ def client(database) -> Iterator[TestClient]:
 def add_rule(database):
     def add(insurer_id=None, covered=True, diagnosis_id=1, service_id=1):
         with database() as db:
-            audited_rule(
+            from testing_coverage import historical_rules
+
+            setup = historical_rules if db.info.get("pre_identity") else audited_rule
+            setup(
                 db,
                 DiagnosisServiceRule(
                     insurer_id=insurer_id,
@@ -277,6 +297,7 @@ def test_global_fallback(client, add_rule, payload, insurer, covered):
 
 @pytest.mark.parametrize("scope", [None, 1])
 @pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("database", ["0008_coverage_writer_sources"], indirect=True)
 def test_denial_wins_conflicting_rules_in_same_scope(
     client, add_rule, payload, scope, reverse
 ):

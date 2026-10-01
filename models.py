@@ -17,6 +17,7 @@ from sqlalchemy import (
     DDL,
     false,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base, relationship, Session, with_loader_criteria
@@ -130,6 +131,25 @@ class InsuranceCompany(Base):
 
 class DiagnosisServiceRule(Base):
     __tablename__ = "diagnosis_service_rules"
+    __table_args__ = (
+        Index(
+            "uq_diagnosis_service_rule_current_global",
+            "diagnosis_id",
+            "service_id",
+            unique=True,
+            postgresql_where=text("insurer_id IS NULL AND is_deleted = false"),
+            sqlite_where=text("insurer_id IS NULL AND is_deleted = false"),
+        ),
+        Index(
+            "uq_diagnosis_service_rule_current_insurer",
+            "diagnosis_id",
+            "service_id",
+            "insurer_id",
+            unique=True,
+            postgresql_where=text("insurer_id IS NOT NULL AND is_deleted = false"),
+            sqlite_where=text("insurer_id IS NOT NULL AND is_deleted = false"),
+        ),
+    )
 
     id = Column(Integer, primary_key=True)
     diagnosis_id = Column(Integer, ForeignKey("diagnosis_codes.id"), nullable=False)

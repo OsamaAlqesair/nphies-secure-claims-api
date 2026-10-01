@@ -219,7 +219,7 @@ def test_seed_preserves_existing_rule_and_duplicates(writer_db, deleted):
                     diagnosis_id=diagnosis.id,
                     service_id=service.id,
                     is_covered=False,
-                    is_deleted=deleted,
+                    is_deleted=True,
                 ),
                 DiagnosisServiceRule(
                     diagnosis_id=diagnosis.id,
@@ -478,12 +478,18 @@ def test_writer_source_migration_preserves_history_and_refuses_destructive_downg
     command.downgrade(config(), "0007_coverage_history_sources")
     mappings(writer_db)
     with writer_db.begin() as db:
-        for old_source in ["update_rule.py", "coverage_mutations.py"]:
+        db.add(ServiceCode(id=18, code="WRITER-S", description="Synthetic"))
+    with writer_db.begin() as db:
+        for scope, old_source in [
+            (None, "update_rule.py"),
+            (9, "coverage_mutations.py"),
+        ]:
             create_rule(
                 db,
                 7,
                 8,
                 False,
+                insurer_id=scope,
                 context=MutationContext(
                     reason="Synthetic prior event", source=old_source
                 ),
@@ -493,8 +499,21 @@ def test_writer_source_migration_preserves_history_and_refuses_destructive_downg
     assert snapshot(writer_db) == before
     with engine.connect() as connection:
         assert (
-            compare_metadata(MigrationContext.configure(connection), Base.metadata)
-            == []
+            all(
+                diff[0] == "add_index"
+                and diff[1].name
+                in (
+                    "uq_diagnosis_service_rule_current_global",
+                    "uq_diagnosis_service_rule_current_insurer",
+                )
+                for diff in compare_metadata(
+                    MigrationContext.configure(connection), Base.metadata
+                )
+            )
+            and len(
+                compare_metadata(MigrationContext.configure(connection), Base.metadata)
+            )
+            == 2
         )
     inspector = sa.inspect(engine)
     assert inspector.get_unique_constraints("diagnosis_service_rules") == []
@@ -508,7 +527,7 @@ def test_writer_source_migration_preserves_history_and_refuses_destructive_downg
         create_rule(
             db,
             7,
-            8,
+            18,
             True,
             context=MutationContext(reason="Synthetic writer event", source=source),
         )
@@ -599,7 +618,11 @@ def test_postgres_sequences_preserved(writer_db, tmp_path):
         db.flush()
         assert (diagnosis.id, service.id, insurer.id) == (8, 9, 10)
         rule = create_rule(
-            db, 7, 8, False, context=MutationContext(reason="Synthetic next rule")
+            db,
+            diagnosis.id,
+            service.id,
+            False,
+            context=MutationContext(reason="Synthetic next rule"),
         )
         assert rule.id == 14
 

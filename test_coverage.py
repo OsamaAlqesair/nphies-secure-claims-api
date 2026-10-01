@@ -9,7 +9,7 @@ from services.coverage import (
     resolve_coverage_by_codes,
 )
 from test_main import database, client, payload, add_rule
-from testing_coverage import audited_rule
+from testing_coverage import audited_rule, historical_rules
 from services.coverage_mutations import soft_delete_rule, MutationContext
 
 
@@ -50,39 +50,60 @@ def test_deleted_mapping_is_missing(database, deleted_model, status):
 
 
 @pytest.mark.parametrize(
-    "rules,requested,status,scope",
+    "rules,requested,status,scope,database",
     [
-        ([], 1, CoverageStatus.NO_APPLICABLE_RULE, CoverageScope.NONE),
-        ([(2, True)], 1, CoverageStatus.NO_APPLICABLE_RULE, CoverageScope.NONE),
-        ([(None, True)], 1, CoverageStatus.APPROVED, CoverageScope.GLOBAL),
-        ([(None, False)], 1, CoverageStatus.DENIED, CoverageScope.GLOBAL),
         (
-            [(None, False), (1, True)],
-            1,
-            CoverageStatus.APPROVED,
-            CoverageScope.INSURER_SPECIFIC,
-        ),
-        (
-            [(None, True), (1, False)],
-            1,
-            CoverageStatus.DENIED,
-            CoverageScope.INSURER_SPECIFIC,
-        ),
-        ([(None, True), (None, False)], 1, CoverageStatus.DENIED, CoverageScope.GLOBAL),
-        (
-            [(1, True), (1, False), (None, True)],
-            1,
-            CoverageStatus.DENIED,
-            CoverageScope.INSURER_SPECIFIC,
-        ),
-        ([(None, True), (2, False)], 1, CoverageStatus.APPROVED, CoverageScope.GLOBAL),
-        (
-            [(None, True), (1, False)],
-            None,
-            CoverageStatus.APPROVED,
-            CoverageScope.GLOBAL,
-        ),
+            *case,
+            (
+                "0008_coverage_writer_sources"
+                if len({i for i, _ in case[0]}) != len(case[0])
+                else "head"
+            ),
+        )
+        for case in [
+            ([], 1, CoverageStatus.NO_APPLICABLE_RULE, CoverageScope.NONE),
+            ([(2, True)], 1, CoverageStatus.NO_APPLICABLE_RULE, CoverageScope.NONE),
+            ([(None, True)], 1, CoverageStatus.APPROVED, CoverageScope.GLOBAL),
+            ([(None, False)], 1, CoverageStatus.DENIED, CoverageScope.GLOBAL),
+            (
+                [(None, False), (1, True)],
+                1,
+                CoverageStatus.APPROVED,
+                CoverageScope.INSURER_SPECIFIC,
+            ),
+            (
+                [(None, True), (1, False)],
+                1,
+                CoverageStatus.DENIED,
+                CoverageScope.INSURER_SPECIFIC,
+            ),
+            (
+                [(None, True), (None, False)],
+                1,
+                CoverageStatus.DENIED,
+                CoverageScope.GLOBAL,
+            ),
+            (
+                [(1, True), (1, False), (None, True)],
+                1,
+                CoverageStatus.DENIED,
+                CoverageScope.INSURER_SPECIFIC,
+            ),
+            (
+                [(None, True), (2, False)],
+                1,
+                CoverageStatus.APPROVED,
+                CoverageScope.GLOBAL,
+            ),
+            (
+                [(None, True), (1, False)],
+                None,
+                CoverageStatus.APPROVED,
+                CoverageScope.GLOBAL,
+            ),
+        ]
     ],
+    indirect=["database"],
 )
 @pytest.mark.parametrize("reverse", [False, True])
 def test_resolution_metadata_and_precedence(
@@ -94,7 +115,10 @@ def test_resolution_metadata_and_precedence(
             row = DiagnosisServiceRule(
                 diagnosis_id=1, service_id=1, insurer_id=insurer, is_covered=covered
             )
-            row = audited_rule(db, row)
+            if db.info.get("pre_identity"):
+                historical_rules(db, row)
+            else:
+                row = audited_rule(db, row)
             if (scope is CoverageScope.GLOBAL and insurer is None) or (
                 scope is CoverageScope.INSURER_SPECIFIC and insurer == requested
             ):

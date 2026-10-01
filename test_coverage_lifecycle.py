@@ -40,6 +40,10 @@ def lifecycle_db(history_db):
     # The checkpoint fixture seeds explicit IDs. Advance the disposable sequence
     # so CREATE exercises generated IDs rather than collisions with those seeds.
     with history_db.begin() as db:
+        db.add(
+            ServiceCode(id=2, code="CREATE-S", description="Synthetic create service")
+        )
+        db.flush()
         if db.bind.dialect.name == "postgresql":
             db.connection().execute(
                 sa.text(
@@ -84,7 +88,7 @@ def state(factory):
 def invoke(db, operation, *, ctx=None):
     ctx = ctx or context()
     if operation == "create":
-        return create_rule(db, 1, 1, True, context=ctx)
+        return create_rule(db, 1, 2, True, context=ctx)
     if operation == "soft_delete":
         return soft_delete_rule(db, 1, context=ctx)
     return restore_rule(db, 3, context=ctx)
@@ -98,15 +102,12 @@ def prepare(factory, operation):
 
 @pytest.mark.parametrize("insurer_id", [None, 1])
 @pytest.mark.parametrize("coverage", [True, False])
-def test_create_snapshot_and_duplicates(lifecycle_db, insurer_id, coverage):
+def test_create_snapshot_and_duplicate_rejection(lifecycle_db, insurer_id, coverage):
     with lifecycle_db.begin() as db:
         first = create_rule(
-            db, 1, 1, coverage, insurer_id=insurer_id, context=context(actor_user_id=1)
+            db, 1, 2, coverage, insurer_id=insurer_id, context=context(actor_user_id=1)
         )
-        second = create_rule(
-            db, 1, 1, coverage, insurer_id=insurer_id, context=context()
-        )
-        assert first.id > 3 and second.id > first.id
+        assert first.id > 3
         assert first.is_deleted is False and first.is_covered is coverage
         row = db.scalar(
             sa.select(CoverageRuleHistory).where(
@@ -114,8 +115,8 @@ def test_create_snapshot_and_duplicates(lifecycle_db, insurer_id, coverage):
             )
         )
         assert row.action == "CREATE"
-        assert (row.diagnosis_id, row.service_id, row.insurer_id) == (1, 1, insurer_id)
-        assert (row.diagnosis_code, row.service_code) == ("TEST-D", "TEST-S")
+        assert (row.diagnosis_id, row.service_id, row.insurer_id) == (1, 2, insurer_id)
+        assert (row.diagnosis_code, row.service_code) == ("TEST-D", "CREATE-S")
         assert row.insurer_name == ("Synthetic insurer" if insurer_id else None)
         assert row.old_is_covered is None and row.old_is_deleted is None
         assert row.new_is_covered is coverage and row.new_is_deleted is False
@@ -123,7 +124,13 @@ def test_create_snapshot_and_duplicates(lifecycle_db, insurer_id, coverage):
         assert (
             row.reason == "Synthetic lifecycle review" and row.occurred_at is not None
         )
-    assert len(history(lifecycle_db)) == 2
+    before = state(lifecycle_db)
+    with pytest.raises(CoverageMutationError) as error:
+        with lifecycle_db.begin() as db:
+            create_rule(db, 1, 2, coverage, insurer_id=insurer_id, context=context())
+    assert error.value.code == "rule_create_conflict"
+    assert state(lifecycle_db) == before
+    assert len(history(lifecycle_db)) == 1
 
 
 @pytest.mark.parametrize("model", [DiagnosisCode, ServiceCode, InsuranceCompany])
@@ -587,7 +594,7 @@ def test_postgres_lock_released_after_failure(lifecycle_db, failure):
         with lifecycle_db.begin() as db:
             db.connection().execute(sa.text("SET LOCAL lock_timeout = '8s'"))
             attempted.set()
-            create_rule(db, 1, 1, False, context=context())
+            create_rule(db, 1, 2, False, context=context())
         return "success"
 
     try:
@@ -631,8 +638,17 @@ def test_history_source_migration_preserves_events_and_schema(lifecycle_db):
             == connection.execute(sa.select(DiagnosisServiceRule.__table__)).all()
         )
         assert (
-            compare_metadata(MigrationContext.configure(connection), Base.metadata)
-            == []
+            all(
+                diff[0] == "add_index"
+                and diff[1].name in mutations._CURRENT_IDENTITY_INDEXES
+                for diff in compare_metadata(
+                    MigrationContext.configure(connection), Base.metadata
+                )
+            )
+            and len(
+                compare_metadata(MigrationContext.configure(connection), Base.metadata)
+            )
+            == 2
         )
     inspector = sa.inspect(engine)
     assert inspector.get_unique_constraints("diagnosis_service_rules") == []
@@ -649,7 +665,7 @@ def test_history_source_migration_preserves_events_and_schema(lifecycle_db):
         )
     command.upgrade(cfg, "0007_coverage_history_sources")
     with lifecycle_db.begin() as db:
-        create_rule(db, 1, 1, False, context=context())
+        create_rule(db, 1, 2, False, context=context())
     preserved = state(lifecycle_db)
     with pytest.raises(RuntimeError, match="history must be preserved"):
         command.downgrade(cfg, "0006_coverage_rule_history")
@@ -674,7 +690,7 @@ def test_history_protection_after_source_migration(lifecycle_db, statement):
     if statement.startswith("TRUNCATE") and engine.dialect.name != "postgresql":
         pytest.skip("SQLite has no TRUNCATE; PostgreSQL verifies it.")
     with lifecycle_db.begin() as db:
-        create_rule(db, 1, 1, True, context=context())
+        create_rule(db, 1, 2, True, context=context())
     before = state(lifecycle_db)
     with pytest.raises(sa.exc.DBAPIError, match="append-only"):
         with engine.begin() as connection:
@@ -695,14 +711,14 @@ def test_pending_unreferenced_actor_does_not_block(lifecycle_db):
         db.add(
             User(username="another-synthetic", role="admin", password_hash="test-only")
         )
-        rule = create_rule(db, 1, 1, True, context=context())
+        rule = create_rule(db, 1, 2, True, context=context())
     row = history(lifecycle_db)[0]
     assert row.rule_id == rule.id and row.actor_user_id is None
 
 
 def test_unknown_history_source_rejected(lifecycle_db):
     with lifecycle_db.begin() as db:
-        rule = create_rule(db, 1, 1, True, context=context())
+        rule = create_rule(db, 1, 2, True, context=context())
     before = state(lifecycle_db)
     with pytest.raises(sa.exc.IntegrityError):
         with lifecycle_db.kw["bind"].begin() as connection:

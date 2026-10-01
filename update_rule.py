@@ -70,8 +70,8 @@ def main(
                 dialect = db.get_bind().dialect.name
                 if dialect == "postgresql":
                     if args.apply:
-                        # No uniqueness constraint exists. Serialize writes during this
-                        # short maintenance transaction, including concurrent inserts.
+                        # Preserve exact-target validation and serialize this short
+                        # maintenance transaction with the audited mutation services.
                         lock_coverage_mutations(db)
                     else:
                         _execute_session_text(db, "read_only")

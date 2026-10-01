@@ -372,6 +372,27 @@ The only currently accepted history source is `update_rule.py`; later writer
 integration must explicitly extend the controlled source constraint.
 Claim audit events still do not preserve decision-time rule snapshots.
 
+## Current coverage rule identity (Phase 10A-3)
+
+Migration `0009_coverage_rule_current_identity` permits at most one non-deleted
+rule for a diagnosis/service pair in each exact scope: GLOBAL (`insurer_id IS
+NULL`) or a specific insurer ID. Global and insurer-specific rules can coexist,
+as can different insurers. Deleted historical duplicates remain unrestricted;
+a deleted mapping does not release a current rule's identity.
+
+Create and current-row import reject occupied identities with
+`rule_create_conflict` and `rule_import_conflict`; restore retains
+`rule_restore_conflict`. Failed operations commit no successful history. Seed
+continues preserving any existing identity, including deleted rules. Legacy
+import checks a consistent source snapshot and refuses current duplicates before
+destination writes. The migration refuses existing current conflicts without
+rewriting rows and requires online preflight. Downgrade drops only these indexes,
+preserving rules and history. Resolver precedence and defensive denial behavior
+remain unchanged.
+
+PostgreSQL's Alembic version column is widened transactionally to fit the required
+revision name; downgrade retains that capacity.
+
 ## Coverage write boundary (Phase 10A-2B-2B)
 
 Coverage rule changes use the audited create/import/update/soft-delete/restore
