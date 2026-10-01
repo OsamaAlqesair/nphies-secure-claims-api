@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select, update
 from models import AuditLog, DiagnosisServiceRule
 from test_auth import client, credentials, identities, database, payload, login, headers
+from testing_coverage import audited_rule
 
 
 def logs(database):
@@ -77,10 +78,11 @@ def test_claim_results_audited(
 
 def test_medical_rejection_audited(client, credentials, database, payload):
     with database() as db:
-        db.add(
+        audited_rule(
+            db,
             DiagnosisServiceRule(
                 diagnosis_id=1, service_id=1, insurer_id=1, is_covered=False
-            )
+            ),
         )
         db.commit()
     response = client.post(

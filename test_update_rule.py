@@ -1,6 +1,8 @@
 """Utility tests use only disposable SQLite, never configured databases."""
 
 import pytest
+from contextlib import ExitStack
+from testing_coverage import owned_sqlite, historical_rules, historical_change
 from sqlalchemy import create_engine, select, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import OperationalError
@@ -18,6 +20,8 @@ from update_rule import main
 @pytest.fixture
 def sessions():
     engine = create_engine("sqlite://")
+    ownership = ExitStack()
+    ownership.enter_context(owned_sqlite(engine))
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine)
     with factory.begin() as db:
@@ -31,8 +35,9 @@ def sessions():
             ]
         )
         db.flush()
-        db.add_all(
-            [
+        historical_rules(
+            db,
+            *[
                 DiagnosisServiceRule(
                     id=1, diagnosis_id=1, service_id=1, insurer_id=1, is_covered=False
                 ),
@@ -51,8 +56,11 @@ def sessions():
                 ),
             ]
         )
-    yield factory
-    engine.dispose()
+    try:
+        yield factory
+    finally:
+        ownership.close()
+        engine.dispose()
 
 
 def args(scope=None):
@@ -120,13 +128,14 @@ def test_invalid_target_never_updates(sessions, capsys, kind):
             command[command.index("TEST-S")] = "OTHER"
             command[command.index("--insurer-id") + 1] = "2"
         elif kind == "duplicate":
-            db.add(
+            historical_rules(
+                db,
                 DiagnosisServiceRule(
                     id=5, diagnosis_id=1, service_id=1, insurer_id=1, is_covered=True
-                )
+                ),
             )
         else:
-            db.get(DiagnosisServiceRule, 1).soft_delete()
+            historical_change(db, db.get(DiagnosisServiceRule, 1), is_deleted=True)
     before = states(sessions)
     assert main(command, session_factory=sessions) == 1
     assert states(sessions) == before
@@ -136,7 +145,8 @@ def test_invalid_target_never_updates(sessions, capsys, kind):
 
 def test_deleted_duplicate_is_not_selected(sessions):
     with sessions.begin() as db:
-        db.add(
+        historical_rules(
+            db,
             DiagnosisServiceRule(
                 id=5,
                 diagnosis_id=1,
@@ -144,7 +154,7 @@ def test_deleted_duplicate_is_not_selected(sessions):
                 insurer_id=1,
                 is_covered=False,
                 is_deleted=True,
-            )
+            ),
         )
     assert main(args() + ["--apply"], session_factory=sessions) == 0
     assert states(sessions) == {1: True, 2: False, 3: False, 4: False, 5: False}

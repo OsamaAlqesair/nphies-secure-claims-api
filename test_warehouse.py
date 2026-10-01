@@ -31,6 +31,12 @@ from models import (
 )
 from services.coverage import CoverageStatus, resolve_coverage
 from migrate_sqlite import import_legacy
+from services.coverage_mutations import (
+    create_rule,
+    soft_delete_rule,
+    update_rule_coverage,
+    MutationContext,
+)
 
 
 @pytest.fixture
@@ -193,13 +199,22 @@ def test_deleted_rules_cannot_approve_claim(warehouse):
     with Session(warehouse) as session:
         diagnosis = DiagnosisCode(code="G43", description="Test")
         service = ServiceCode(code="70450", description="Test")
-        rule = DiagnosisServiceRule(
-            diagnosis=diagnosis, service=service, is_covered=True
+        session.add_all([diagnosis, service])
+        session.flush()
+        rule = create_rule(
+            session,
+            diagnosis.id,
+            service.id,
+            True,
+            context=MutationContext(reason="Synthetic coverage fixture"),
         )
-        session.add(rule)
         session.commit()
         assert resolve_coverage(session, diagnosis.id, service.id, None).is_covered
-        rule.soft_delete()
+        soft_delete_rule(
+            session,
+            rule.id,
+            context=MutationContext(reason="Synthetic deleted coverage"),
+        )
         session.commit()
         assert (
             resolve_coverage(session, diagnosis.id, service.id, None).status
@@ -269,7 +284,12 @@ def test_seed_is_idempotent_and_preserves_denials(warehouse, monkeypatch):
         rules = session.scalars(select(DiagnosisServiceRule)).all()
         assert len(rules) == 3
         for rule in rules:
-            rule.is_covered = False
+            update_rule_coverage(
+                session,
+                rule.id,
+                False,
+                context=MutationContext(reason="Synthetic seed denial"),
+            )
         session.commit()
     seed.seed_data()
     with sessions() as session:

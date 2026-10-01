@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from testing_coverage import owned_postgres_container
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
@@ -98,7 +99,9 @@ def postgres_engine():
                 connection.scalar(sa.text("SELECT current_database()"))
                 == "nphies_identity_test"
             )
-        with pytest.MonkeyPatch.context() as environment:
+        with owned_postgres_container(
+            engine, name, result.stdout.decode().strip()
+        ), pytest.MonkeyPatch.context() as environment:
             environment.setenv("TEST_DATABASE_URL", test_url)
             yield engine
     finally:

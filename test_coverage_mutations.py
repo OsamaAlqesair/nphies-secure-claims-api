@@ -6,6 +6,8 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from contextlib import ExitStack
+from testing_coverage import owned_sqlite, owned_postgres_schema, historical_rules
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 from alembic import command
@@ -57,6 +59,12 @@ def history_db(request, monkeypatch):
 
     monkeypatch.setattr(database, "engine", engine)
     factory = sessionmaker(engine, expire_on_commit=False)
+    ownership = ExitStack()
+    ownership.enter_context(
+        owned_postgres_schema(engine, root, schema)
+        if root is not None
+        else owned_sqlite(engine)
+    )
     try:
         cfg = Config(str(Path(__file__).with_name("alembic.ini")))
         command.upgrade(cfg, "0005_terminology_identity")
@@ -75,8 +83,9 @@ def history_db(request, monkeypatch):
                 ]
             )
             db.flush()
-            db.add_all(
-                [
+            historical_rules(
+                db,
+                *[
                     DiagnosisServiceRule(
                         id=1,
                         diagnosis_id=1,
@@ -99,7 +108,7 @@ def history_db(request, monkeypatch):
                         is_covered=True,
                         is_deleted=True,
                     ),
-                ]
+                ],
             )
         with engine.connect() as connection:
             before = list(
@@ -123,6 +132,7 @@ def history_db(request, monkeypatch):
         command.upgrade(cfg, "head")
         yield factory
     finally:
+        ownership.close()
         engine.dispose()
         if root is not None:
             with root.begin() as connection:

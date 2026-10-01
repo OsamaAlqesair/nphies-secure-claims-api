@@ -9,6 +9,8 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
+from contextlib import ExitStack
+from testing_coverage import owned_sqlite, owned_postgres_schema, historical_rules
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 from alembic import command
@@ -57,12 +59,19 @@ def writer_db(request, monkeypatch):
             connection.execute("PRAGMA foreign_keys=ON")
 
     factory = sessionmaker(engine, expire_on_commit=False)
+    ownership = ExitStack()
+    ownership.enter_context(
+        owned_postgres_schema(engine, root, schema)
+        if root is not None
+        else owned_sqlite(engine)
+    )
     monkeypatch.setattr(database, "engine", engine)
     monkeypatch.setattr(seed, "SessionLocal", factory)
     try:
         command.upgrade(config(), "head")
         yield factory
     finally:
+        ownership.close()
         engine.dispose()
         if root is not None:
             with root.begin() as connection:
@@ -203,8 +212,9 @@ def test_seed_preserves_existing_rule_and_duplicates(writer_db, deleted):
         service = ServiceCode(code="70450", description="Synthetic")
         db.add_all([diagnosis, service])
         db.flush()
-        db.add_all(
-            [
+        historical_rules(
+            db,
+            *[
                 DiagnosisServiceRule(
                     diagnosis_id=diagnosis.id,
                     service_id=service.id,
@@ -217,7 +227,7 @@ def test_seed_preserves_existing_rule_and_duplicates(writer_db, deleted):
                     is_covered=False,
                     is_deleted=deleted,
                 ),
-            ]
+            ],
         )
     original = snapshot(writer_db)["diagnosis_service_rules"]
     seed.seed_data()

@@ -20,6 +20,17 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base, relationship, Session, with_loader_criteria
+from services.coverage_write_guards import (
+    CoverageMutationError,
+    _before_flush,
+    _orm_execute,
+    _before_rule_insert,
+    _before_rule_update,
+    _before_rule_delete,
+    _after_rule_write,
+    _after_history_insert,
+    _before_history_insert,
+)
 
 
 def utcnow():
@@ -56,6 +67,7 @@ Base = declarative_base(cls=AuditMixin)
 
 @event.listens_for(Session, "do_orm_execute")
 def filter_deleted(state):
+    _orm_execute(state)
     if (
         state.is_update
         and state.bind_mapper is not None
@@ -76,6 +88,8 @@ def filter_deleted(state):
 
 @event.listens_for(Session, "before_flush")
 def preserve_deleted_rows(session, context, instances):
+    # Rules must be rejected before the generic soft-delete conversion below.
+    _before_flush(session)
     for obj in list(session.dirty) + list(session.deleted):
         if isinstance(obj, (AuditLog, CoverageRuleHistory)) and (
             obj in session.deleted or session.is_modified(obj)
@@ -133,6 +147,14 @@ class DiagnosisServiceRule(Base):
     diagnosis = relationship("DiagnosisCode")
     service = relationship("ServiceCode")
     insurer = relationship("InsuranceCompany")
+
+    def soft_delete(self):
+        raise CoverageMutationError(
+            "Use audited soft_delete_rule() for coverage rules."
+        )
+
+    def restore(self):
+        raise CoverageMutationError("Use audited restore_rule() for coverage rules.")
 
     def __repr__(self):
         insurer_name = self.insurer.name if self.insurer else "ALL (Fallback)"
@@ -475,6 +497,14 @@ class CoverageRuleHistory(HistoryBase):
 
 
 # create_all() is used by isolated SQLite fixtures. Production uses Alembic.
+event.listen(DiagnosisServiceRule, "before_insert", _before_rule_insert)
+event.listen(DiagnosisServiceRule, "before_update", _before_rule_update)
+event.listen(DiagnosisServiceRule, "before_delete", _before_rule_delete)
+event.listen(DiagnosisServiceRule, "after_insert", _after_rule_write)
+event.listen(DiagnosisServiceRule, "after_update", _after_rule_write)
+event.listen(CoverageRuleHistory, "after_insert", _after_history_insert)
+event.listen(CoverageRuleHistory, "before_insert", _before_history_insert)
+
 for operation in ("UPDATE", "DELETE"):
     event.listen(
         CoverageRuleHistory.__table__,

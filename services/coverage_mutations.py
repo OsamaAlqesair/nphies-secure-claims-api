@@ -9,6 +9,11 @@ import logging
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from services.coverage_write_guards import (
+    CoverageMutationError,
+    _audited_service,
+    _authorize,
+)
 
 from models import (
     CoverageRuleHistory,
@@ -20,14 +25,6 @@ from models import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class CoverageMutationError(ValueError):
-    """Fixed public-safe diagnostic; never include database exception details."""
-
-    def __init__(self, message: str, *, code: str = "rule_mutation_failed") -> None:
-        super().__init__(message)
-        self.code = code
 
 
 def validate_reason(reason: str | None) -> str:
@@ -95,6 +92,7 @@ def lock_coverage_mutations(db: Session) -> None:
             ) from None
 
 
+@_audited_service
 def update_rule_coverage(
     db: Session, rule_id: int, is_covered: bool, *, context: MutationContext
 ) -> bool:
@@ -116,6 +114,15 @@ def update_rule_coverage(
         for obj in db.dirty
     ):
         raise CoverageMutationError("Rule has pending changes; audited update refused.")
+    # Reject other pending rule writes even on a no-op update, before refreshing.
+    for obj in list(db.new) + list(db.dirty) + list(db.deleted):
+        if isinstance(obj, DiagnosisServiceRule) and (
+            obj in db.new or obj in db.deleted or db.is_modified(obj)
+        ):
+            raise CoverageMutationError(
+                "Rule has pending changes; audited update refused.",
+                code="rule_pending_changes",
+            )
     try:
         lock_coverage_mutations(db)
         with db.no_autoflush:
@@ -171,9 +178,10 @@ def update_rule_coverage(
                 source=context.source,
                 reason=context.reason,
             )
-            rule.is_covered = is_covered
-            db.add(history)
-        db.flush()
+            with _authorize(db, rule, "UPDATE", history):
+                rule.is_covered = is_covered
+                db.add(history)
+                db.flush()
         return True
     except SQLAlchemyError as exc:
         logger.error(
@@ -194,7 +202,7 @@ def _prepare_lifecycle(db: Session, context: MutationContext) -> MutationContext
         source=context.source,
         actor_user_id=context.actor_user_id,
     )
-    # Service-local validation only: no generic ORM/direct-write guards. Pending
+    # Pending
     # coverage/mapping changes could otherwise be flushed without their own audit
     # or overwritten by populate_existing after the lock. Already flushed writes
     # from earlier audited calls in this transaction remain supported.
@@ -296,6 +304,7 @@ def _lifecycle_failure(action: str, exc: SQLAlchemyError) -> CoverageMutationErr
     )
 
 
+@_audited_service
 def create_rule(
     db: Session,
     diagnosis_id: int,
@@ -327,10 +336,13 @@ def create_rule(
                 is_covered=is_covered,
                 is_deleted=False,
             )
-            db.add(rule)
-            db.flush()  # Obtain the generated foreign key for the history event.
-            db.add(_lifecycle_history(rule, mappings, "CREATE", None, context))
-            db.flush()
+            history = _lifecycle_history(rule, mappings, "CREATE", None, context)
+            with _authorize(db, rule, "CREATE", history):
+                db.add(rule)
+                db.flush()  # Obtain the generated foreign key for the history event.
+                history.rule_id = rule.id
+                db.add(history)
+                db.flush()
         return rule
     except SQLAlchemyError as exc:
         raise _lifecycle_failure("create", exc) from None
@@ -356,6 +368,7 @@ def _import_timestamp(value, *, postgres: bool) -> datetime | str:
     raise CoverageMutationError("Imported rule timestamp is invalid.")
 
 
+@_audited_service
 def import_rule(
     db: Session,
     rule_id: int,
@@ -404,10 +417,13 @@ def import_rule(
                 is_deleted=is_deleted,
                 **timestamps,
             )
-            db.add(rule)
-            db.flush()
-            db.add(_lifecycle_history(rule, mappings, "CREATE", None, context))
-            db.flush()
+            history = _lifecycle_history(rule, mappings, "CREATE", None, context)
+            with _authorize(db, rule, "IMPORT", history):
+                db.add(rule)
+                db.flush()
+                history.rule_id = rule.id
+                db.add(history)
+                db.flush()
         return rule
     except SQLAlchemyError as exc:
         raise _lifecycle_failure("import", exc) from None
@@ -465,14 +481,19 @@ def _change_rule_lifecycle(
                         code="rule_restore_conflict",
                     )
             # Snapshot before changing the target; coverage is never reassigned.
-            db.add(_lifecycle_history(rule, mappings, action, rule.is_deleted, context))
-            rule.is_deleted = not restore
-            db.flush()
+            history = _lifecycle_history(
+                rule, mappings, action, rule.is_deleted, context
+            )
+            with _authorize(db, rule, action, history):
+                db.add(history)
+                rule.is_deleted = not restore
+                db.flush()
         return rule
     except SQLAlchemyError as exc:
         raise _lifecycle_failure(action.lower(), exc) from None
 
 
+@_audited_service
 def soft_delete_rule(
     db: Session, rule_id: int, *, context: MutationContext
 ) -> DiagnosisServiceRule:
@@ -484,6 +505,7 @@ def soft_delete_rule(
     return _change_rule_lifecycle(db, rule_id, restore=False, context=context)
 
 
+@_audited_service
 def restore_rule(
     db: Session, rule_id: int, *, context: MutationContext
 ) -> DiagnosisServiceRule:

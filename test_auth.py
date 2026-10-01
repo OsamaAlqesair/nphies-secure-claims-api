@@ -19,6 +19,7 @@ from auth import (
 from main import app, get_db
 from models import User, DiagnosisServiceRule
 from test_main import database, payload
+from testing_coverage import audited_rule
 
 
 @pytest.fixture(scope="module")
@@ -37,10 +38,11 @@ def identities(database, credentials):
             ),
         ]
         db.add_all(users)
-        db.add(
+        audited_rule(
+            db,
             DiagnosisServiceRule(
                 diagnosis_id=1, service_id=1, insurer_id=None, is_covered=True
-            )
+            ),
         )
         db.commit()
         return {user.role: user.id for user in users}

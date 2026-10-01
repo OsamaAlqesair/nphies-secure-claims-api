@@ -25,6 +25,7 @@ from models import (
     AuditLog,
 )
 from testing_auth import provider_headers
+from testing_coverage import audited_rule
 from test_fhir_claim import payload  # Shared synthetic FHIR fixture.
 
 PATH = "/api/v1/claims/pre-validate"
@@ -115,14 +116,15 @@ def context(tmp_path):
 
 def rule(sessions, covered, insurer=None, diagnosis=1, service=1, deleted=False):
     with sessions() as db:
-        db.add(
+        audited_rule(
+            db,
             DiagnosisServiceRule(
                 diagnosis_id=diagnosis,
                 service_id=service,
                 insurer_id=insurer,
                 is_covered=covered,
                 is_deleted=deleted,
-            )
+            ),
         )
         db.commit()
 

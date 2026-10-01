@@ -98,13 +98,24 @@ def isolated_client():
                 ServiceCode(id=1, code="70450", description="Synthetic service"),
                 InsuranceCompany(id=1, name="Synthetic insurer"),
                 InsuranceCompany(id=2, name="Synthetic fallback insurer"),
-                DiagnosisServiceRule(
-                    diagnosis_id=1, service_id=1, insurer_id=None, is_covered=True
-                ),
-                DiagnosisServiceRule(
-                    diagnosis_id=1, service_id=1, insurer_id=1, is_covered=False
-                ),
             ]
+        )
+        db.commit()
+
+    with sessions() as db:
+        from testing_coverage import audited_rule
+
+        audited_rule(
+            db,
+            DiagnosisServiceRule(
+                diagnosis_id=1, service_id=1, insurer_id=None, is_covered=True
+            ),
+        )
+        audited_rule(
+            db,
+            DiagnosisServiceRule(
+                diagnosis_id=1, service_id=1, insurer_id=1, is_covered=False
+            ),
         )
         db.commit()
 

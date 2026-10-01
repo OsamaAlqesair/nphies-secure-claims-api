@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from main import app, get_db
 from testing_auth import provider_headers
+from testing_coverage import audited_rule
 from models import (
     Base,
     DiagnosisCode,
@@ -100,13 +101,14 @@ def client(database) -> Iterator[TestClient]:
 def add_rule(database):
     def add(insurer_id=None, covered=True, diagnosis_id=1, service_id=1):
         with database() as db:
-            db.add(
+            audited_rule(
+                db,
                 DiagnosisServiceRule(
                     insurer_id=insurer_id,
                     is_covered=covered,
                     diagnosis_id=diagnosis_id,
                     service_id=service_id,
-                )
+                ),
             )
             db.commit()
 

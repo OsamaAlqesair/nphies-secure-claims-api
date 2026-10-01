@@ -9,6 +9,8 @@ from services.coverage import (
     resolve_coverage_by_codes,
 )
 from test_main import database, client, payload, add_rule
+from testing_coverage import audited_rule
+from services.coverage_mutations import soft_delete_rule, MutationContext
 
 
 @pytest.mark.parametrize(
@@ -92,8 +94,7 @@ def test_resolution_metadata_and_precedence(
             row = DiagnosisServiceRule(
                 diagnosis_id=1, service_id=1, insurer_id=insurer, is_covered=covered
             )
-            db.add(row)
-            db.flush()
+            row = audited_rule(db, row)
             if (scope is CoverageScope.GLOBAL and insurer is None) or (
                 scope is CoverageScope.INSURER_SPECIFIC and insurer == requested
             ):
@@ -117,7 +118,11 @@ def test_deleted_rule_not_in_matched_metadata(database, add_rule):
         override = db.scalar(
             select(DiagnosisServiceRule).where(DiagnosisServiceRule.insurer_id == 1)
         )
-        override.soft_delete()
+        soft_delete_rule(
+            db,
+            override.id,
+            context=MutationContext(reason="Synthetic deleted override"),
+        )
         db.commit()
         result = resolve_coverage_by_codes(db, "G43", "70450", 1)
         assert result.status is CoverageStatus.APPROVED

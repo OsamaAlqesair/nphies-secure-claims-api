@@ -32,6 +32,7 @@ from services.coverage_mutations import (
 )
 from test_coverage_mutations import history_db, history
 from test_terminology_identity import postgres_engine
+from testing_coverage import historical_row
 
 
 @pytest.fixture
@@ -336,12 +337,12 @@ def test_physically_missing_mapping(lifecycle_db, operation, column):
             connection.exec_driver_sql(
                 f"ALTER TABLE diagnosis_service_rules DROP CONSTRAINT {constraint}"
             )
-            connection.execute(DiagnosisServiceRule.__table__.insert().values(**values))
+            historical_row(connection, **values)
     else:
         with engine.connect() as connection:
             connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
             connection.commit()
-            connection.execute(DiagnosisServiceRule.__table__.insert().values(**values))
+            historical_row(connection, **values)
             connection.commit()
             connection.exec_driver_sql("PRAGMA foreign_keys=ON")
             connection.commit()
