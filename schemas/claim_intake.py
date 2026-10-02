@@ -53,6 +53,25 @@ class HistoricalModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class ClaimRevalidationResult(HistoricalModel):
+    public_id: UUID
+    attempt_no: Annotated[StrictInt, Field(ge=2)]
+    result: ValidationResultCode
+    reason: ValidationReason
+    operation_outcome: OperationOutcome
+    occurred_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def consistent_result(self):
+        if self.reason != "validation_" + self.result.lower():
+            raise ValueError("Historical validation result is inconsistent.")
+        return self
+
+    @field_serializer("operation_outcome", when_used="json")
+    def outcome_snapshot(self, value):
+        return value.model_dump(mode="json", exclude_unset=True)
+
+
 class ClaimIntakeSummary(HistoricalModel):
     public_id: UUID
     created_at: AwareDatetime

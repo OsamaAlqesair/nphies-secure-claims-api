@@ -684,12 +684,13 @@ def test_read_only_service_does_not_flush_pending_work(owned_data, monkeypatch):
         assert user in db.dirty
 
 
-def test_route_scope_contains_only_creation_and_four_gets():
+def test_route_scope_preserves_creation_and_four_gets():
     document = app.openapi()
     paths = document["paths"]
     assert set(paths[PATH]) == {"post", "get"}
-    for suffix in ("/{public_id}", "/{public_id}/validations", "/{public_id}/timeline"):
+    for suffix in ("/{public_id}", "/{public_id}/timeline"):
         assert set(paths[PATH + suffix]) == {"get"}
+    assert set(paths[PATH + "/{public_id}/validations"]) == {"get", "post"}
     for suffix in (
         "",
         "/{public_id}",

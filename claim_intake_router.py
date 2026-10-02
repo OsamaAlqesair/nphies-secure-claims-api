@@ -20,6 +20,7 @@ from schemas.claim_intake import (
     ClaimIntakeList,
     ClaimIntakeResult,
     ClaimIntakeTimelineItem,
+    ClaimRevalidationResult,
     ClaimValidationHistoryItem,
 )
 from schemas.fhir_claim import ClaimSubmission
@@ -29,7 +30,7 @@ from services.claim_intake import (
     create_intake,
     rollback,
 )
-from services import claim_intake_reads
+from services import claim_intake_reads, claim_revalidation
 
 router = APIRouter(prefix="/api/v1/claim-intakes", tags=["Claim intake"])
 
@@ -222,3 +223,59 @@ def get_claim_intake_timeline(
     db: Annotated[Session, Depends(get_db)],
 ):
     return historical_response(db, claim_intake_reads.intake_timeline, user, public_id)
+
+
+async def no_revalidation_body(
+    request: Request,
+    user: Annotated[User, Depends(intake_owner)],
+) -> None:
+    if await request.body():
+        raise RequestValidationError(
+            [
+                {
+                    "type": "extra_forbidden",
+                    "loc": ("body",),
+                    "msg": "No request body is permitted.",
+                }
+            ]
+        ) from None
+
+
+@router.post(
+    "/{public_id}/validations",
+    response_model=ClaimRevalidationResult,
+    status_code=201,
+    dependencies=[Depends(no_revalidation_body)],
+    responses={
+        **READ_ERRORS,
+        200: {
+            "model": ClaimRevalidationResult,
+            "description": "Immutable revalidation replay",
+        },
+        422: {
+            **READ_ERRORS[422],
+            "description": "Invalid public UUID, key, or request body",
+        },
+    },
+)
+def post_claim_revalidation(
+    public_id: CanonicalPublicID,
+    request: Request,
+    response: Response,
+    user: Annotated[User, Depends(intake_owner)],
+    db: Annotated[Session, Depends(get_db)],
+    idempotency_key: Annotated[UUID, Header(alias="Idempotency-Key")],
+) -> ClaimRevalidationResult | FHIRResponse:
+    outcome = historical_response(
+        db,
+        claim_revalidation.revalidate_intake,
+        user,
+        public_id,
+        idempotency_key,
+        request,
+    )
+    if isinstance(outcome, FHIRResponse):
+        return outcome
+    result, created = outcome
+    response.status_code = 201 if created else 200
+    return result
