@@ -2,6 +2,8 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 from async_database import async_engine
 from claim_router import router as claim_router
+from claim_intake_router import router as claim_intake_router, unavailable_response
+from services.claim_intake import ClaimIntakeUnavailable
 from scalar_fastapi import get_scalar_api_reference
 from fastapi import FastAPI, Depends, Request
 from fastapi.responses import JSONResponse
@@ -45,6 +47,12 @@ app = FastAPI(
 
 app.include_router(auth_router)
 app.include_router(claim_router)
+app.include_router(claim_intake_router)
+
+
+@app.exception_handler(ClaimIntakeUnavailable)
+def intake_persistence_error(request: Request, exc: ClaimIntakeUnavailable):
+    return unavailable_response()
 
 
 @app.middleware("http")
