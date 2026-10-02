@@ -5,22 +5,15 @@ from claim_router import router as claim_router
 from scalar_fastapi import get_scalar_api_reference
 from fastapi import FastAPI, Depends, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
-from models import InsuranceCompany
 from fastapi.exceptions import RequestValidationError
 from services.coverage import COVERAGE_FAILURES, resolve_coverage_by_codes
-from services.terminology import (
-    DIAGNOSIS_SYSTEM,
-    SERVICE_SYSTEMS,
-    AmbiguousTerminologyError,
-    find_term,
-)
+from services.claim_business import BusinessPair, ClaimBusinessEvaluator
 from auth import router as auth_router, claim_access, AuthError
 from services.audit import add_event, record_failure
 from services.outcomes import generate_rejection
 from services.diagnosis_catalog import (
-    DiagnosisCatalogMissingError,
     MISSING_CATALOG_CODE,
     MISSING_CATALOG_MESSAGE,
 )
@@ -173,73 +166,53 @@ def validation_error_handler(request: Request, exc: RequestValidationError):
     },
 )
 def process_claim(claim: ClaimPayload, request: Request, db: Session = Depends(get_db)):
-    def reject(
-        reason: str,
-        message: str,
-        status_code: int = 422,
-        *,
-        public_reason: bool = False,
-    ):
-        add_event(db, request, "claim.validation", "failure", reason, status_code)
-        db.commit()
-        return generate_rejection(
-            message, status_code, reason=reason if public_reason else None
-        )
-
     # Pydantic has already enforced the financial invariants.
     try:
-        diagnosis = find_term(db, claim.diagnosis_code, (DIAGNOSIS_SYSTEM,))
-        service = find_term(db, claim.service_code, SERVICE_SYSTEMS)
-    except DiagnosisCatalogMissingError:
-        add_event(db, request, "claim.validation", "failure", MISSING_CATALOG_CODE, 503)
+        result = ClaimBusinessEvaluator(
+            db, coverage_resolver=resolve_coverage_by_codes
+        ).evaluate(
+            BusinessPair(claim.diagnosis_code, claim.service_code, claim.insurer_id)
+        )
+        if result.is_valid:
+            add_event(db, request, "claim.validation", "success", "approved", 200)
+            db.commit()
+            return ClaimApproval(
+                message=f"Claim approved for {result.service.display or result.service.code} with diagnosis {result.diagnosis.display or result.diagnosis.code}.",
+                net_payable=claim.net_payable,
+            )
+        reason = result.reason
+        status = 422
+        code = "business-rule"
+        public_reason = True
+        if reason == MISSING_CATALOG_CODE:
+            message, status, code = MISSING_CATALOG_MESSAGE, 503, "not-found"
+        elif reason in {
+            "unknown_diagnosis",
+            "unknown_service",
+            "ambiguous_terminology",
+        }:
+            message = {
+                "unknown_diagnosis": "Diagnosis code is not active in the NPHIES ICD-10-AM terminology.",
+                "unknown_service": "Service code is not active in the supported NPHIES service terminology.",
+                "ambiguous_terminology": "Code matches multiple active terminology entries; a unique coding is required.",
+            }[reason]
+            status, public_reason = 400, False
+        elif reason == "unknown_insurer":
+            message = "Insurer ID does not identify an available insurance company."
+        else:
+            _, message = COVERAGE_FAILURES[result.coverage.status]
+        add_event(db, request, "claim.validation", "failure", reason, status)
         db.commit()
         return generate_rejection(
-            MISSING_CATALOG_MESSAGE, 503, reason=MISSING_CATALOG_CODE, code="not-found"
+            message,
+            status,
+            reason=reason if public_reason else None,
+            code=code,
         )
-    except AmbiguousTerminologyError:
-        return reject(
-            "ambiguous_terminology",
-            "Code matches multiple active terminology entries; a unique coding is required.",
-            400,
+    except SQLAlchemyError:
+        db.rollback()
+        return generate_rejection(
+            "Claim validation is temporarily unavailable. Retry later.",
+            503,
+            code="transient",
         )
-    if diagnosis is None:
-        return reject(
-            "unknown_diagnosis",
-            "Diagnosis code is not active in the NPHIES ICD-10-AM terminology.",
-            400,
-        )
-    if service is None:
-        return reject(
-            "unknown_service",
-            "Service code is not active in the supported NPHIES service terminology.",
-            400,
-        )
-
-    # A supplied internal ID must resolve before global fallback can be considered.
-    # InsuranceCompany has no active/status flag; soft deletion defines availability.
-    if claim.insurer_id is not None:
-        insurer_id = db.scalar(
-            select(InsuranceCompany.id).where(
-                InsuranceCompany.id == claim.insurer_id,
-                InsuranceCompany.is_deleted.is_(False),
-            )
-        )
-        if insurer_id is None:
-            return reject(
-                "unknown_insurer",
-                "Insurer ID does not identify an available insurance company.",
-                public_reason=True,
-            )
-
-    decision = resolve_coverage_by_codes(
-        db, diagnosis.code, service.code, claim.insurer_id
-    )
-    if not decision.is_covered:
-        reason, message = COVERAGE_FAILURES[decision.status]
-        return reject(reason, message, public_reason=True)
-    add_event(db, request, "claim.validation", "success", "approved", 200)
-    db.commit()
-    return ClaimApproval(
-        message=f"Claim approved for {service.display or service.code} with diagnosis {diagnosis.display or diagnosis.code}.",
-        net_payable=claim.net_payable,
-    )

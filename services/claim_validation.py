@@ -6,19 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models import Organization, InsuranceCompany
 from schemas.fhir_claim import ClaimSubmission
 from schemas.claim import Issue
-from services.terminology import (
-    find_term,
-    DIAGNOSIS_SYSTEM,
-    SERVICE_SYSTEMS,
-    AmbiguousTerminologyError,
-)
-from services.coverage import (
-    COVERAGE_FAILURES,
-    CoverageStatus,
-    resolve_coverage_by_codes,
-)
+from services.claim_business import BusinessPair, ClaimBusinessEvaluator
+from services.coverage import COVERAGE_FAILURES, CoverageStatus
 from services.diagnosis_catalog import (
-    DiagnosisCatalogMissingError,
     MISSING_CATALOG_CODE,
     MISSING_CATALOG_MESSAGE,
 )
@@ -85,9 +75,8 @@ def evaluate(db: Session, submission: ClaimSubmission) -> list[Issue]:
 
     diagnoses = {diagnosis.sequence: diagnosis for diagnosis in claim.diagnosis}
     issues = []
-    # Memoization shares decisions for repeated pairs without bypassing per-item checks.
-    terms = {}
-    decisions = {}
+    # Organization lookup above has already resolved an available insurer.
+    evaluator = ClaimBusinessEvaluator(db, verify_insurer=False)
     for item in claim.item:
         expression = [f"Claim.item.where(sequence = {item.sequence}).productOrService"]
         if len(item.productOrService.coding) != 1:
@@ -107,55 +96,28 @@ def evaluate(db: Session, submission: ClaimSubmission) -> list[Issue]:
             location = expression + [
                 f"Claim.diagnosis.where(sequence = {sequence}).diagnosisCodeableConcept"
             ]
-            try:
-                diagnosis_key = (diagnosis.code, (DIAGNOSIS_SYSTEM,))
-                service_key = (service.code, SERVICE_SYSTEMS)
-                if diagnosis_key not in terms:
-                    terms[diagnosis_key] = find_term(
-                        db, diagnosis.code, (DIAGNOSIS_SYSTEM,)
-                    )
-                if service_key not in terms:
-                    terms[service_key] = find_term(db, service.code, SERVICE_SYSTEMS)
-                if terms[diagnosis_key] is None:
-                    issues.append(
-                        rejection(
-                            "unknown_diagnosis",
-                            "Diagnosis code is not active",
-                            location,
-                        )
-                    )
-                    continue
-                if (
-                    terms[service_key] is None
-                    or terms[service_key].code_system_url != service.system
-                ):
-                    issues.append(
-                        rejection(
-                            "unknown_service", "Service code is not active", location
-                        )
-                    )
-                    continue
-            except DiagnosisCatalogMissingError:
+            result = evaluator.evaluate(
+                BusinessPair(diagnosis.code, service.code, insurer_id, service.system)
+            )
+            if result.reason == MISSING_CATALOG_CODE:
                 issue = rejection(
                     MISSING_CATALOG_CODE, MISSING_CATALOG_MESSAGE, ["Claim.diagnosis"]
                 )
                 issue.code = "not-found"
                 return [issue]
-            except AmbiguousTerminologyError:
-                issues.append(
-                    rejection(
-                        "ambiguous_terminology",
-                        "Code matches multiple active terminology entries.",
-                        location,
-                    )
-                )
+            if result.reason in {
+                "unknown_diagnosis",
+                "unknown_service",
+                "ambiguous_terminology",
+            }:
+                message = {
+                    "unknown_diagnosis": "Diagnosis code is not active",
+                    "unknown_service": "Service code is not active",
+                    "ambiguous_terminology": "Code matches multiple active terminology entries.",
+                }[result.reason]
+                issues.append(rejection(result.reason, message, location))
                 continue
-            key = (diagnosis.code, service.code)
-            if key not in decisions:
-                decisions[key] = resolve_coverage_by_codes(
-                    db, diagnosis.code, service.code, insurer_id
-                )
-            decision = decisions[key]
+            decision = result.coverage
             if not decision.is_covered:
                 reason, message = COVERAGE_FAILURES[decision.status]
                 if decision.status is CoverageStatus.DENIED:

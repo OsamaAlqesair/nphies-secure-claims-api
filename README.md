@@ -264,6 +264,12 @@ current API actions; local account-management CLI events are not included.
 
 ## FHIR claim pre-validation
 
+`POST /api/v1/claims/pre-validate` is the canonical product route.
+`POST /process-claim` remains a legacy compatibility route. Both adapters use
+the same request-scoped `ClaimBusinessEvaluator` for terminology and coverage;
+their request schemas, financial checks, responses and audit formatting remain
+specific to each public contract. The evaluator performs no writes or commits.
+
 `POST /api/v1/claims/pre-validate` accepts the `ClaimSubmission` intake
 envelope with a provider/admin Bearer token. Use decimal strings for financial
 values in ordinary JSON requests. See `schemas/FHIR_CLAIM.md` and the complete

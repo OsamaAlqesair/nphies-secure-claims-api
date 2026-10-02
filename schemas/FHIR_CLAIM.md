@@ -16,9 +16,12 @@ claim_json = submission.claim.to_fhir_json()
 ```
 
 ClaimSubmission is an internal envelope, not a FHIR resource or message Bundle.
-The existing /process-claim contract remains separate. POST
-/api/v1/claims/pre-validate accepts ClaimSubmission, requires a provider/admin
-Bearer token, and evaluates coverage using an injected AsyncSession.
+POST /api/v1/claims/pre-validate is the canonical product route. It accepts
+ClaimSubmission, requires a provider/admin Bearer token, and evaluates coverage
+using an injected AsyncSession. /process-claim remains a legacy compatibility
+contract. Both adapt their inputs to the same internal ClaimBusinessEvaluator;
+the legacy contract does not manufacture FHIR resources. Successful
+pre-validation is not payer authorization.
 
 For a conventional FastAPI JSON input, send monetary/quantity/factor values as
 decimal strings. Binary floats are deliberately rejected. To read FHIR JSON
