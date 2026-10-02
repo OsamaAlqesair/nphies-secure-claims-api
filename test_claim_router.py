@@ -322,9 +322,13 @@ def test_database_failure_is_sanitized(context, payload, monkeypatch):
 def test_openapi_contract(context):
     client, _ = context
     operation = client.get("/openapi.json").json()["paths"][PATH]["post"]
-    assert operation["requestBody"]["content"]["application/json"]["schema"][
+    submission_ref = operation["requestBody"]["content"]["application/json"]["schema"][
         "$ref"
-    ].endswith("/ClaimSubmission")
+    ]
+    assert submission_ref.rsplit("/", 1)[-1] in {
+        "ClaimSubmission",
+        "ClaimSubmission-Input",
+    }
     assert operation["security"]
     assert "application/fhir+json" in operation["responses"]["200"]["content"]
 
