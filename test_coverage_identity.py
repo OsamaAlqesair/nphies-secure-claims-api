@@ -412,6 +412,9 @@ def test_real_unrelated_database_constraints_stay_generic(writer_db, failure):
 
 
 @pytest.mark.parametrize("scope", [None, 9, "both"])
+@pytest.mark.parametrize(
+    "writer_db", [("sqlite", HEAD), ("postgresql", HEAD)], indirect=True
+)
 def test_migration_all_conflicts_preserve_data_and_revision(writer_db, scope):
     mappings(writer_db)
     first_scope = None if scope == "both" else scope
@@ -446,6 +449,9 @@ def test_migration_all_conflicts_preserve_data_and_revision(writer_db, scope):
     assert indexes(writer_db) == {}
 
 
+@pytest.mark.parametrize(
+    "writer_db", [("sqlite", HEAD), ("postgresql", HEAD)], indirect=True
+)
 def test_migration_clean_indexes_lossless_downgrade_and_reupgrade(writer_db):
     mappings(writer_db)
     with writer_db.begin() as db:
@@ -488,6 +494,9 @@ def test_migration_clean_indexes_lossless_downgrade_and_reupgrade(writer_db):
     )
 
 
+@pytest.mark.parametrize(
+    "writer_db", [("sqlite", HEAD), ("postgresql", HEAD)], indirect=True
+)
 def test_second_index_failure_rolls_back_first(writer_db):
     command.downgrade(config(), PARENT)
     engine = writer_db.kw["bind"]
@@ -567,7 +576,7 @@ def test_postgres_same_identity_races(writer_db, scope, race):
     assert len(events) == 1
 
 
-@pytest.mark.parametrize("writer_db", ["postgresql"], indirect=True)
+@pytest.mark.parametrize("writer_db", [("postgresql", HEAD)], indirect=True)
 def test_postgres_migration_blocks_writer_across_preflight_and_index_creation(
     writer_db,
 ):
@@ -651,7 +660,7 @@ def test_legacy_all_conflicts_have_sorted_controlled_diagnostics(writer_db, tmp_
     ]
 
 
-@pytest.mark.parametrize("writer_db", ["postgresql"], indirect=True)
+@pytest.mark.parametrize("writer_db", [("postgresql", HEAD)], indirect=True)
 def test_postgres_required_revision_capacity_is_transactional(writer_db):
     command.downgrade(config(), PARENT)
     engine = writer_db.kw["bind"]

@@ -119,6 +119,16 @@ def test_all_entities_have_nonnullable_audit_columns():
             assert table.c.occurred_at.server_default is not None
             assert not {"is_deleted", "created_at", "updated_at"} & set(table.c.keys())
             continue
+        if table.name in {
+            "claim_intakes",
+            "claim_validation_attempts",
+            "claim_intake_events",
+        }:
+            timestamp = "created_at" if table.name == "claim_intakes" else "occurred_at"
+            assert not table.c[timestamp].nullable
+            assert table.c[timestamp].server_default is not None
+            assert not {"is_deleted", "updated_at"} & set(table.c.keys())
+            continue
         for column in ("is_deleted", "created_at", "updated_at"):
             assert not table.c[column].nullable
             assert table.c[column].server_default is not None

@@ -38,9 +38,12 @@ from update_rule import main
 @pytest.fixture(params=["sqlite", "postgresql"])
 def history_db(request, monkeypatch):
     """Upgrade real migrations in a fresh SQLite DB or a disposable PG schema."""
+    dialect, revision = (
+        request.param if isinstance(request.param, tuple) else (request.param, "head")
+    )
     root = None
     schema = None
-    if request.param == "postgresql":
+    if dialect == "postgresql":
         root = request.getfixturevalue("postgres_engine")
         assert root.url.host == "127.0.0.1"
         assert root.url.database == "nphies_identity_test"
@@ -129,7 +132,7 @@ def history_db(request, monkeypatch):
                 connection.scalar(sa.text("SELECT version_num FROM alembic_version"))
                 == "0006_coverage_rule_history"
             )
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, revision)
         yield factory
     finally:
         ownership.close()

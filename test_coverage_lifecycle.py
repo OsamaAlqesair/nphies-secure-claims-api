@@ -612,6 +612,14 @@ def test_postgres_lock_released_after_failure(lifecycle_db, failure):
     assert [h.action for h in history(lifecycle_db)] == ["CREATE"]
 
 
+@pytest.mark.parametrize(
+    "history_db",
+    [
+        ("sqlite", "0009_coverage_rule_current_identity"),
+        ("postgresql", "0009_coverage_rule_current_identity"),
+    ],
+    indirect=True,
+)
 def test_history_source_migration_preserves_events_and_schema(lifecycle_db):
     cfg = Config(str(Path(__file__).with_name("alembic.ini")))
     engine = lifecycle_db.kw["bind"]
@@ -629,6 +637,20 @@ def test_history_source_migration_preserves_events_and_schema(lifecycle_db):
         ).all()
     command.upgrade(cfg, "0007_coverage_history_sources")
     with engine.connect() as connection:
+        # Compare the schema that existed before the intake-history migration.
+        checkpoint = MigrationContext.configure(
+            connection,
+            opts={
+                "include_object": lambda obj, name, kind, reflected, compared: kind
+                != "table"
+                or name
+                not in {
+                    "claim_intakes",
+                    "claim_validation_attempts",
+                    "claim_intake_events",
+                }
+            },
+        )
         assert (
             before_events
             == connection.execute(sa.select(CoverageRuleHistory.__table__)).all()
@@ -641,14 +663,9 @@ def test_history_source_migration_preserves_events_and_schema(lifecycle_db):
             all(
                 diff[0] == "add_index"
                 and diff[1].name in mutations._CURRENT_IDENTITY_INDEXES
-                for diff in compare_metadata(
-                    MigrationContext.configure(connection), Base.metadata
-                )
+                for diff in compare_metadata(checkpoint, Base.metadata)
             )
-            and len(
-                compare_metadata(MigrationContext.configure(connection), Base.metadata)
-            )
-            == 2
+            and len(compare_metadata(checkpoint, Base.metadata)) == 2
         )
     inspector = sa.inspect(engine)
     assert inspector.get_unique_constraints("diagnosis_service_rules") == []

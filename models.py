@@ -1,8 +1,10 @@
 from datetime import datetime, timezone
+from uuid import UUID, uuid4
 from sqlalchemy import (
     Column,
     Integer,
     String,
+    Text,
     Boolean,
     ForeignKey,
     Date,
@@ -20,7 +22,13 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import declarative_base, relationship, Session, with_loader_criteria
+from sqlalchemy.orm import (
+    declarative_base,
+    relationship,
+    Session,
+    with_loader_criteria,
+    validates,
+)
 from services.coverage_write_guards import (
     CoverageMutationError,
     _before_flush,
@@ -72,6 +80,12 @@ def filter_deleted(state):
     if (
         state.is_update
         and state.bind_mapper is not None
+        and issubclass(state.bind_mapper.class_, ClaimHistoryMixin)
+    ):
+        raise ValueError("Claim intake history is append-only.")
+    if (
+        state.is_update
+        and state.bind_mapper is not None
         and state.bind_mapper.class_ in (AuditLog, CoverageRuleHistory)
     ):
         raise ValueError("Audit records are append-only.")
@@ -92,6 +106,10 @@ def preserve_deleted_rows(session, context, instances):
     # Rules must be rejected before the generic soft-delete conversion below.
     _before_flush(session)
     for obj in list(session.dirty) + list(session.deleted):
+        if isinstance(obj, ClaimHistoryMixin) and (
+            obj in session.deleted or session.is_modified(obj)
+        ):
+            raise ValueError("Claim intake history is append-only.")
         if isinstance(obj, (AuditLog, CoverageRuleHistory)) and (
             obj in session.deleted or session.is_modified(obj)
         ):
@@ -451,6 +469,264 @@ class NphiesTerminology(Base):
 HistoryBase = declarative_base(metadata=Base.metadata)
 
 
+def _history_uuid(value):
+    try:
+        return str(UUID(str(value)))
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError("A UUID-compatible history identifier is required.") from None
+
+
+def _history_uuid_checks(column, name, *, nullable=False):
+    pattern = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    prefix = f"{column} IS NULL OR " if nullable else ""
+    return (
+        CheckConstraint(prefix + f"{column} ~ '^{pattern}$'", name=name).ddl_if(
+            dialect="postgresql"
+        ),
+        CheckConstraint(
+            prefix + f"(length({column}) = 36 AND {column} = lower({column}) "
+            f"AND substr({column}, 9, 1) = '-' AND substr({column}, 14, 1) = '-' "
+            f"AND substr({column}, 19, 1) = '-' AND substr({column}, 24, 1) = '-' "
+            f"AND length(replace({column}, '-', '')) = 32 "
+            f"AND replace({column}, '-', '') NOT GLOB '*[^0-9a-f]*')",
+            name=name,
+        ).ddl_if(dialect="sqlite"),
+    )
+
+
+def _history_object_checks(column, name, *, original_text=False):
+    postgres_value = f"{column}::jsonb" if original_text else column
+    return (
+        CheckConstraint(f"jsonb_typeof({postgres_value}) = 'object'", name=name).ddl_if(
+            dialect="postgresql"
+        ),
+        CheckConstraint(
+            f"json_valid({column}) AND json_type({column}) = 'object'", name=name
+        ).ddl_if(dialect="sqlite"),
+    )
+
+
+class ClaimHistoryMixin:
+    """Historical rows have no mutable audit columns or transaction helpers.
+
+    Database triggers protect persisted rows, not against privileged owners
+    disabling triggers. Snapshot contents must never be logged or audited.
+    """
+
+    def soft_delete(self):
+        raise ValueError("Claim intake history is append-only.")
+
+    def restore(self):
+        raise ValueError("Claim intake history is append-only.")
+
+
+class ClaimIntake(ClaimHistoryMixin, HistoryBase):
+    __tablename__ = "claim_intakes"
+
+    id = Column(Integer, primary_key=True)
+    # Application-server UUID generation, using the repository's UUID text form.
+    public_id = Column(String(36), nullable=False, default=lambda: str(uuid4()))
+    owner_user_id = Column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=func.now(),
+    )
+    idempotency_key = Column(String(36), nullable=False)
+    canonical_input_hash = Column(String(64), nullable=False)
+    # Text preserves the accepted JSON exactly, including numeric lexemes,
+    # whitespace and object order that a JSONB round trip would discard.
+    original_request_snapshot = Column(Text, nullable=False)
+    validated_submission_snapshot = Column(ResourceJSON, nullable=False)
+    schema_version = Column(String(64), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("public_id", name="uq_claim_intake_public_id"),
+        UniqueConstraint(
+            "owner_user_id", "idempotency_key", name="uq_claim_intake_owner_idempotency"
+        ),
+        Index("ix_claim_intake_owner_created", "owner_user_id", "created_at", "id"),
+        CheckConstraint(
+            "length(trim(schema_version)) > 0 AND length(schema_version) <= 64",
+            name="ck_claim_intake_schema_version",
+        ),
+        CheckConstraint(
+            "canonical_input_hash ~ '^[0-9a-f]{64}$'", name="ck_claim_intake_input_hash"
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "length(canonical_input_hash) = 64 AND canonical_input_hash NOT GLOB '*[^0-9a-f]*'",
+            name="ck_claim_intake_input_hash",
+        ).ddl_if(dialect="sqlite"),
+        *_history_uuid_checks("public_id", "ck_claim_intake_public_uuid"),
+        *_history_uuid_checks("idempotency_key", "ck_claim_intake_idempotency_uuid"),
+        *_history_object_checks(
+            "original_request_snapshot",
+            "ck_claim_intake_original_object",
+            original_text=True,
+        ),
+        *_history_object_checks(
+            "validated_submission_snapshot", "ck_claim_intake_validated_object"
+        ),
+    )
+
+    @validates("public_id", "idempotency_key")
+    def validate_uuid(self, key, value):
+        return _history_uuid(value)
+
+
+class ClaimValidationAttempt(ClaimHistoryMixin, HistoryBase):
+    __tablename__ = "claim_validation_attempts"
+
+    id = Column(Integer, primary_key=True)
+    intake_id = Column(
+        ForeignKey("claim_intakes.id", ondelete="RESTRICT"), nullable=False
+    )
+    attempt_no = Column(Integer, nullable=False)
+    actor_user_id = Column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    request_id = Column(String(36), nullable=False, index=True)
+    occurred_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=func.now(),
+    )
+    result = Column(String(16), nullable=False)
+    reason = Column(String(64), nullable=False)
+    operation_outcome_snapshot = Column(ResourceJSON, nullable=False)
+    # JSON facts from dataclasses.asdict(ClaimValidationReport); no ORM objects.
+    validation_report_snapshot = Column(ResourceJSON, nullable=False)
+    validation_schema_version = Column(String(64), nullable=False)
+    revalidation_idempotency_key = Column(String(36))
+
+    __table_args__ = (
+        UniqueConstraint("intake_id", "attempt_no", name="uq_claim_attempt_number"),
+        UniqueConstraint(
+            "intake_id",
+            "revalidation_idempotency_key",
+            name="uq_claim_attempt_idempotency",
+        ),
+        CheckConstraint("attempt_no > 0", name="ck_claim_attempt_number"),
+        CheckConstraint(
+            "result IN ('PASSED', 'FAILED', 'UNAVAILABLE')",
+            name="ck_claim_attempt_result",
+        ),
+        CheckConstraint(
+            "reason IN ('validation_passed', 'validation_failed', 'validation_unavailable')",
+            name="ck_claim_attempt_reason",
+        ),
+        CheckConstraint(
+            "reason = 'validation_' || lower(result)",
+            name="ck_claim_attempt_result_reason",
+        ),
+        CheckConstraint(
+            "length(trim(request_id)) > 0 AND length(request_id) <= 36",
+            name="ck_claim_attempt_request_id",
+        ),
+        CheckConstraint(
+            "length(trim(validation_schema_version)) > 0 AND length(validation_schema_version) <= 64",
+            name="ck_claim_attempt_schema_version",
+        ),
+        Index("ix_claim_attempt_occurred", "occurred_at"),
+        *_history_uuid_checks(
+            "revalidation_idempotency_key",
+            "ck_claim_attempt_idempotency_uuid",
+            nullable=True,
+        ),
+        *_history_object_checks(
+            "operation_outcome_snapshot", "ck_claim_attempt_outcome_object"
+        ),
+        *_history_object_checks(
+            "validation_report_snapshot", "ck_claim_attempt_report_object"
+        ),
+    )
+
+    @validates("revalidation_idempotency_key")
+    def validate_uuid(self, key, value):
+        return _history_uuid(value) if value is not None else None
+
+
+class ClaimIntakeEvent(ClaimHistoryMixin, HistoryBase):
+    __tablename__ = "claim_intake_events"
+
+    id = Column(Integer, primary_key=True)
+    intake_id = Column(
+        ForeignKey("claim_intakes.id", ondelete="RESTRICT"), nullable=False
+    )
+    event_no = Column(Integer, nullable=False)
+    event_type = Column(String(32), nullable=False)
+    actor_user_id = Column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    request_id = Column(String(36), nullable=False, index=True)
+    reason = Column(String(64), nullable=False)
+    # Only scalar validation metadata is allowed here, never request/patient data.
+    details = Column(
+        ResourceJSON, nullable=False, default=dict, server_default=text("'{}'")
+    )
+    occurred_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("intake_id", "event_no", name="uq_claim_event_number"),
+        CheckConstraint("event_no > 0", name="ck_claim_event_number"),
+        CheckConstraint(
+            "event_type IN ('intake.created', 'validation.completed')",
+            name="ck_claim_event_type",
+        ),
+        CheckConstraint(
+            "reason IN ('intake_accepted', 'validation_completed')",
+            name="ck_claim_event_reason",
+        ),
+        CheckConstraint(
+            "(event_type = 'intake.created' AND reason = 'intake_accepted') OR (event_type = 'validation.completed' AND reason = 'validation_completed')",
+            name="ck_claim_event_type_reason",
+        ),
+        CheckConstraint(
+            "length(trim(request_id)) > 0 AND length(request_id) <= 36",
+            name="ck_claim_event_request_id",
+        ),
+        CheckConstraint(
+            "(details - 'attempt_no' - 'result') = '{}'::jsonb",
+            name="ck_claim_event_detail_keys",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "json_remove(details, '$.attempt_no', '$.result') = '{}'",
+            name="ck_claim_event_detail_keys",
+        ).ddl_if(dialect="sqlite"),
+        CheckConstraint(
+            "(NOT (details ? 'result') OR (jsonb_typeof(details->'result') = 'string' AND details->>'result' IN ('PASSED', 'FAILED', 'UNAVAILABLE'))) AND (NOT (details ? 'attempt_no') OR (jsonb_typeof(details->'attempt_no') = 'number' AND details->>'attempt_no' ~ '^[1-9][0-9]*$'))",
+            name="ck_claim_event_detail_values",
+        ).ddl_if(dialect="postgresql"),
+        CheckConstraint(
+            "(json_type(details, '$.result') IS NULL OR (json_type(details, '$.result') = 'text' AND json_extract(details, '$.result') IN ('PASSED', 'FAILED', 'UNAVAILABLE'))) AND (json_type(details, '$.attempt_no') IS NULL OR (json_type(details, '$.attempt_no') = 'integer' AND json_extract(details, '$.attempt_no') > 0))",
+            name="ck_claim_event_detail_values",
+        ).ddl_if(dialect="sqlite"),
+        Index("ix_claim_event_occurred", "occurred_at"),
+        *_history_object_checks("details", "ck_claim_event_details_object"),
+    )
+
+    @validates("details")
+    def validate_details(self, key, value):
+        if not isinstance(value, dict) or set(value) - {"attempt_no", "result"}:
+            raise ValueError("Only controlled claim event metadata is permitted.")
+        if "attempt_no" in value and (
+            type(value["attempt_no"]) is not int or value["attempt_no"] < 1
+        ):
+            raise ValueError("A positive event attempt number is required.")
+        if "result" in value and value["result"] not in (
+            "PASSED",
+            "FAILED",
+            "UNAVAILABLE",
+        ):
+            raise ValueError("A supported validation result is required.")
+        return value
+
+
 class CoverageRuleHistory(HistoryBase):
     __tablename__ = "coverage_rule_history"
 
@@ -535,3 +811,35 @@ for operation in ("UPDATE", "DELETE"):
             "SELECT RAISE(ABORT, 'Coverage rule history is append-only'); END"
         ).execute_if(dialect="sqlite"),
     )
+
+
+for history_model in (ClaimIntake, ClaimValidationAttempt, ClaimIntakeEvent):
+    table = history_model.__table__
+    for operation in ("UPDATE", "DELETE"):
+        event.listen(
+            table,
+            "after_create",
+            DDL(
+                f"CREATE TRIGGER prevent_{table.name}_{operation.lower()} "
+                f"BEFORE {operation} ON {table.name} BEGIN "
+                "SELECT RAISE(ABORT, 'Claim intake history is append-only'); END"
+            ).execute_if(dialect="sqlite"),
+        )
+    event.listen(
+        table,
+        "after_create",
+        DDL(
+            "CREATE OR REPLACE FUNCTION reject_claim_intake_history_mutation() "
+            "RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'Claim intake history is append-only'; END; $$ LANGUAGE plpgsql"
+        ).execute_if(dialect="postgresql"),
+    )
+    for operation, level in (("UPDATE OR DELETE", "ROW"), ("TRUNCATE", "STATEMENT")):
+        suffix = "truncate" if operation == "TRUNCATE" else "mutation"
+        event.listen(
+            table,
+            "after_create",
+            DDL(
+                f"CREATE TRIGGER prevent_{table.name}_{suffix} BEFORE {operation} "
+                f"ON {table.name} FOR EACH {level} EXECUTE FUNCTION reject_claim_intake_history_mutation()"
+            ).execute_if(dialect="postgresql"),
+        )

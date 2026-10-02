@@ -40,8 +40,13 @@ from test_terminology_identity import postgres_engine
 
 @pytest.fixture(params=["sqlite", "postgresql"])
 def writer_db(request, monkeypatch):
+    # Fixed-revision migration tests must not cross later history-preserving
+    # downgrades. Other cases continue to exercise the current repository head.
+    dialect, revision = (
+        request.param if isinstance(request.param, tuple) else (request.param, "head")
+    )
     root = schema = None
-    if request.param == "postgresql":
+    if dialect == "postgresql":
         root = request.getfixturevalue("postgres_engine")
         assert root.url.host == "127.0.0.1"
         assert root.url.database == "nphies_identity_test"
@@ -68,7 +73,7 @@ def writer_db(request, monkeypatch):
     monkeypatch.setattr(database, "engine", engine)
     monkeypatch.setattr(seed, "SessionLocal", factory)
     try:
-        command.upgrade(config(), "head")
+        command.upgrade(config(), revision)
         yield factory
     finally:
         ownership.close()
@@ -471,6 +476,14 @@ def test_all_truthful_sources_accepted(writer_db, source):
 
 
 @pytest.mark.parametrize("source", ["seed.py", "migrate_sqlite.py"])
+@pytest.mark.parametrize(
+    "writer_db",
+    [
+        ("sqlite", "0009_coverage_rule_current_identity"),
+        ("postgresql", "0009_coverage_rule_current_identity"),
+    ],
+    indirect=True,
+)
 def test_writer_source_migration_preserves_history_and_refuses_destructive_downgrade(
     writer_db, source
 ):
@@ -498,6 +511,20 @@ def test_writer_source_migration_preserves_history_and_refuses_destructive_downg
     command.upgrade(config(), "0008_coverage_writer_sources")
     assert snapshot(writer_db) == before
     with engine.connect() as connection:
+        # Intake history did not exist at this deliberately fixed checkpoint.
+        checkpoint = MigrationContext.configure(
+            connection,
+            opts={
+                "include_object": lambda obj, name, kind, reflected, compared: kind
+                != "table"
+                or name
+                not in {
+                    "claim_intakes",
+                    "claim_validation_attempts",
+                    "claim_intake_events",
+                }
+            },
+        )
         assert (
             all(
                 diff[0] == "add_index"
@@ -506,14 +533,9 @@ def test_writer_source_migration_preserves_history_and_refuses_destructive_downg
                     "uq_diagnosis_service_rule_current_global",
                     "uq_diagnosis_service_rule_current_insurer",
                 )
-                for diff in compare_metadata(
-                    MigrationContext.configure(connection), Base.metadata
-                )
+                for diff in compare_metadata(checkpoint, Base.metadata)
             )
-            and len(
-                compare_metadata(MigrationContext.configure(connection), Base.metadata)
-            )
-            == 2
+            and len(compare_metadata(checkpoint, Base.metadata)) == 2
         )
     inspector = sa.inspect(engine)
     assert inspector.get_unique_constraints("diagnosis_service_rules") == []
