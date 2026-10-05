@@ -2,7 +2,7 @@
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from models import NphiesTerminology
+from models import NphiesTerminology, TerminologyCatalogEntry
 from service_systems import SERVICE_SYSTEMS
 
 from diagnosis_systems import ICD10_AM_SYSTEM
@@ -17,10 +17,18 @@ class AmbiguousTerminologyError(ValueError):
 
 
 def find_term(
-    db: Session, code: str, systems: tuple[str, ...]
-) -> NphiesTerminology | None:
+    db: Session, code: str, systems: tuple[str, ...], *, catalog=None
+) -> NphiesTerminology | TerminologyCatalogEntry | None:
+    if ICD10_AM_SYSTEM in systems and systems != (ICD10_AM_SYSTEM,):
+        raise ValueError("Diagnosis membership requires an explicit catalog scope.")
     if systems == (ICD10_AM_SYSTEM,):
-        require_diagnosis_catalog(db)
+        catalog = catalog or require_diagnosis_catalog(db)
+        return db.scalar(
+            select(TerminologyCatalogEntry).where(
+                TerminologyCatalogEntry.catalog_id == catalog.id,
+                TerminologyCatalogEntry.code == code,
+            )
+        )
     # Base's session event excludes soft-deleted rows as well.
     terms = db.scalars(
         select(NphiesTerminology)

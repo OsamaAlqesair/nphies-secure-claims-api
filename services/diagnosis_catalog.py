@@ -1,10 +1,10 @@
-"""Read-only ICD-10-AM catalog presence; presence is not release completeness."""
+"""Cheap authoritative catalog readiness; legacy row presence is irrelevant."""
 
 from dataclasses import dataclass
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from diagnosis_systems import ICD10_AM_SYSTEM
-from models import NphiesTerminology
+from models import TerminologyCatalog
 
 MISSING_CATALOG_CODE = "icd10_am_catalog_missing"
 MISSING_CATALOG_MESSAGE = "ICD-10-AM terminology catalog is not loaded."
@@ -16,33 +16,58 @@ class DiagnosisCatalogMissingError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class CatalogIdentity:
+    id: int
+    family: str
+    edition: str
+    source_sha256: str
+    parser_version: str
+    artifact_schema: str
+    artifact_sha256: str
+    content_sha256: str
+    reconstruction_label: str
+
+
+@dataclass(frozen=True)
 class DiagnosisCatalogReadiness:
-    rows: int
-    active_rows: int
+    rows: int = 0
+    active_rows: int = 0
+    catalog: CatalogIdentity | None = None
 
     @property
     def present(self) -> bool:
-        return self.rows > 0
+        return self.catalog is not None
 
 
 def diagnosis_catalog_readiness(db: Session) -> DiagnosisCatalogReadiness:
-    filters = (
-        NphiesTerminology.code_system_url == ICD10_AM_SYSTEM,
-        NphiesTerminology.is_deleted.is_(False),
-        NphiesTerminology.code.is_not(None),
-        NphiesTerminology.code != "",
+    row = db.scalar(
+        select(TerminologyCatalog).where(
+            TerminologyCatalog.family == "ICD-10-AM",
+            TerminologyCatalog.code_system_url == ICD10_AM_SYSTEM,
+            TerminologyCatalog.state == "ACTIVE",
+            TerminologyCatalog.imported_count == TerminologyCatalog.expected_count,
+            TerminologyCatalog.import_sha256 == TerminologyCatalog.content_sha256,
+            TerminologyCatalog.validated_at.is_not(None),
+            TerminologyCatalog.activated_at.is_not(None),
+        )
     )
-    rows = db.scalar(
-        select(func.count()).select_from(NphiesTerminology).where(*filters)
+    if row is None:
+        return DiagnosisCatalogReadiness()
+    from services.catalog_import import REVIEWED_MANIFESTS
+
+    if not any(
+        all(getattr(row, k) == v for k, v in manifest.metadata().items())
+        for manifest in REVIEWED_MANIFESTS
+    ):
+        return DiagnosisCatalogReadiness()
+    identity = CatalogIdentity(
+        **{name: getattr(row, name) for name in CatalogIdentity.__dataclass_fields__}
     )
-    active = db.scalar(
-        select(func.count())
-        .select_from(NphiesTerminology)
-        .where(*filters, NphiesTerminology.is_active.is_(True))
-    )
-    return DiagnosisCatalogReadiness(rows=rows, active_rows=active)
+    return DiagnosisCatalogReadiness(row.imported_count, row.imported_count, identity)
 
 
-def require_diagnosis_catalog(db: Session) -> None:
-    if not diagnosis_catalog_readiness(db).present:
+def require_diagnosis_catalog(db: Session) -> CatalogIdentity:
+    readiness = diagnosis_catalog_readiness(db)
+    if not readiness.present:
         raise DiagnosisCatalogMissingError
+    return readiness.catalog

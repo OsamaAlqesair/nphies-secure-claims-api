@@ -114,6 +114,12 @@ def entities(session):
 
 def test_all_entities_have_nonnullable_audit_columns():
     for table in Base.metadata.tables.values():
+        if table.name in {"terminology_catalogs", "terminology_catalog_entries"}:
+            assert not {"is_deleted", "updated_at"} & set(table.c.keys())
+            if table.name == "terminology_catalogs":
+                assert not table.c.created_at.nullable
+                assert table.c.created_at.server_default is not None
+            continue
         if table.name == "coverage_rule_history":
             assert not table.c.occurred_at.nullable
             assert table.c.occurred_at.server_default is not None

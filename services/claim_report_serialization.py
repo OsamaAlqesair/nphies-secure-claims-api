@@ -1,10 +1,11 @@
 """Versioned historical facts from the evaluated report, with no database reads."""
 
+from dataclasses import asdict
 from services.claim_validation import report_issues
 from services.claim_validation_report import ClaimValidationReport
 from schemas.claim import Issue, OperationOutcome
 
-REPORT_VERSION = "claim-validation-report-v1"
+REPORT_VERSION = "claim-validation-report-v2"
 
 
 def serialize_report(report: ClaimValidationReport) -> dict:
@@ -48,6 +49,7 @@ def serialize_report(report: ClaimValidationReport) -> dict:
                     "diagnosis": term(result.diagnosis),
                     "service": term(result.service),
                     "reason": result.reason,
+                    "catalog": asdict(result.catalog) if result.catalog else None,
                     "is_valid": result.is_valid,
                     "coverage": (
                         {

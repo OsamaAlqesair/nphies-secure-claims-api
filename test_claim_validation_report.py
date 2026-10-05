@@ -37,6 +37,7 @@ from services.terminology import DIAGNOSIS_SYSTEM, SERVICE_SYSTEMS
 from test_claim_router import PATH, context, payload, rule
 from test_coverage_writers import writer_db
 from test_terminology_identity import postgres_engine
+from testing_catalog import synthetic_catalog, retire_catalog
 
 
 @pytest.fixture
@@ -72,6 +73,7 @@ def report_db(writer_db):
                 ),
             ]
         )
+        synthetic_catalog(db)
     return writer_db
 
 
@@ -266,6 +268,10 @@ def test_terminology_and_unavailability(
                     term.soft_delete()
                 else:
                     term.is_active = False
+            if failure == "catalog":
+                retire_catalog(db)
+            elif failure == "diagnosis":
+                synthetic_catalog(db)
         if failure == "ambiguous":
             db.add(
                 NphiesTerminology(

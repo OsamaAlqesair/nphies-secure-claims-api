@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, select, func, event
 from sqlalchemy.orm import sessionmaker
 
 from diagnosis_systems import ICD10_AM_SYSTEM
-from models import NphiesTerminology
+from models import NphiesTerminology, TerminologyCatalog, TerminologyCatalogEntry
 from services.diagnosis_catalog import (
     diagnosis_catalog_readiness,
     DiagnosisCatalogMissingError,
@@ -24,6 +24,8 @@ from import_icd10_am import import_dataset, load_approved_dataset
 def sessions():
     engine = create_engine("sqlite://")
     NphiesTerminology.__table__.create(engine)
+    TerminologyCatalog.__table__.create(engine)
+    TerminologyCatalogEntry.__table__.create(engine)
     try:
         yield sessionmaker(engine)
     finally:
@@ -65,9 +67,9 @@ def test_loaded_catalog_and_unknown_diagnosis(sessions, synthetic_file):
     )
     with sessions() as db:
         readiness = diagnosis_catalog_readiness(db)
-        assert readiness.present and readiness.active_rows == 1
-        assert find_term(db, "E11.9", (ICD10_AM_SYSTEM,)).code == "E11.9"
-        assert find_term(db, "UNKNOWN-TEST-CODE", (ICD10_AM_SYSTEM,)) is None
+        assert not readiness.present and readiness.active_rows == 0
+        with pytest.raises(DiagnosisCatalogMissingError):
+            find_term(db, "E11.9", (ICD10_AM_SYSTEM,))
 
 
 def test_dry_run_no_write(sessions, synthetic_file):
@@ -119,9 +121,10 @@ def test_inactive_catalog_is_present_but_diagnosis_rejected(sessions, synthetic_
         == 1
     )
     with sessions() as db:
-        assert diagnosis_catalog_readiness(db).present
+        assert not diagnosis_catalog_readiness(db).present
         assert diagnosis_catalog_readiness(db).active_rows == 0
-        assert find_term(db, "E11.9", (ICD10_AM_SYSTEM,)) is None
+        with pytest.raises(DiagnosisCatalogMissingError):
+            find_term(db, "E11.9", (ICD10_AM_SYSTEM,))
 
 
 @pytest.mark.parametrize(
@@ -221,7 +224,7 @@ def test_current_migration_schema_supports_importer(monkeypatch, synthetic_file)
         config = Config("alembic.ini")
         assert (
             ScriptDirectory.from_config(config).get_current_head()
-            == "0010_claim_intake_history"
+            == "0011_terminology_catalogs"
         )
         command.upgrade(config, "head")
         assert "version" not in {
@@ -234,7 +237,8 @@ def test_current_migration_schema_supports_importer(monkeypatch, synthetic_file)
         assert first.inserted == second.existing == 1
         assert first.failed == second.failed == second.inserted == 0
         with factory() as db:
-            assert diagnosis_catalog_readiness(db).present
-            assert find_term(db, "E11.9", (ICD10_AM_SYSTEM,)) is not None
+            assert not diagnosis_catalog_readiness(db).present
+            with pytest.raises(DiagnosisCatalogMissingError):
+                find_term(db, "E11.9", (ICD10_AM_SYSTEM,))
     finally:
         engine.dispose()

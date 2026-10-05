@@ -45,6 +45,7 @@ from services.claim_report_serialization import REPORT_VERSION, serialize_report
 from services.coverage_mutations import MutationContext, create_rule
 from services.diagnosis_catalog import MISSING_CATALOG_CODE
 from services.terminology import DIAGNOSIS_SYSTEM, SERVICE_SYSTEMS
+from testing_catalog import synthetic_catalog, retire_catalog
 from test_claim_intake_history import isolated_engine
 from test_fhir_claim import payload
 from test_terminology_identity import postgres_engine
@@ -121,6 +122,7 @@ def intake_context(request, monkeypatch):
                     ),
                 ]
             )
+            synthetic_catalog(db)
         headers = {
             user.id: {"Authorization": "Bearer " + create_access_token(user)}
             for user in users
@@ -147,6 +149,7 @@ def intake_context(request, monkeypatch):
 def configure(context, result):
     with context.factory.begin() as db:
         if result == "UNAVAILABLE":
+            retire_catalog(db)
             db.execute(
                 sa.update(NphiesTerminology)
                 .where(NphiesTerminology.code_system_url == DIAGNOSIS_SYSTEM)
@@ -271,6 +274,7 @@ def test_creation_records_all_results_and_exact_snapshots(
     business = observation["business_result"]
     assert business["pair"]["insurer_id"] == 42
     if result == "UNAVAILABLE":
+        assert business["catalog"] is None
         assert observation["terminology_status"] == "unavailable"
         assert business["coverage"] is None
         assert report["termination"] == {
@@ -281,6 +285,9 @@ def test_creation_records_all_results_and_exact_snapshots(
         }
     else:
         assert observation["terminology_status"] == "valid"
+        assert business["catalog"]["family"] == "ICD-10-AM"
+        assert business["catalog"]["edition"].startswith("SYNTHETIC TEST ONLY")
+        assert len(business["catalog"]["content_sha256"]) == 64
         assert business["diagnosis"] == {
             "code": "E11.9",
             "system": DIAGNOSIS_SYSTEM,
@@ -409,6 +416,7 @@ def test_replay_uses_only_original_immutable_result(
     # Current terminology changes cannot change the historical response.
     with context.factory.begin() as db:
         db.execute(sa.update(NphiesTerminology).values(is_deleted=True))
+        retire_catalog(db)
     validation = Mock(side_effect=AssertionError("Replay reevaluated"))
     monkeypatch.setattr(claim_intake, "evaluate_report", validation)
     statements = []

@@ -37,6 +37,36 @@ from services.claim_report_serialization import (
 )
 from services.coverage_mutations import MutationContext, create_rule, soft_delete_rule
 from services.terminology import DIAGNOSIS_SYSTEM
+from testing_catalog import synthetic_catalog, retire_catalog
+
+
+def test_v1_report_roundtrips_without_invented_catalog(
+    intake_context, payload, monkeypatch
+):
+    from services import claim_intake
+    from test_claim_intakes import configure, post
+    from services.claim_report_serialization import serialize_report
+
+    def legacy_report(report):
+        snapshot = serialize_report(report)
+        snapshot["schema_version"] = "claim-validation-report-v1"
+        for entry in snapshot["observations"]:
+            entry["business_result"].pop("catalog")
+        return snapshot
+
+    monkeypatch.setattr(claim_intake, "serialize_report", legacy_report)
+    monkeypatch.setattr(claim_intake, "REPORT_VERSION", "claim-validation-report-v1")
+    configure(intake_context, "PASSED")
+    response = post(intake_context, payload)
+    assert response.status_code == 201
+    public_id = response.json()["public_id"]
+    response = get(intake_context, "/" + public_id + "/validations")
+    assert response.status_code == 200
+    report = response.json()[0]["validation_report"]
+    assert report["schema_version"] == "claim-validation-report-v1"
+    assert "catalog" not in report["observations"][0]["business_result"]
+
+
 from test_claim_intakes import PATH, configure, history, intake_context, post
 from test_fhir_claim import payload
 from test_terminology_identity import postgres_engine
@@ -85,6 +115,7 @@ def append_attempt(context, public_id, number, result, when=None):
                 context=MutationContext(reason="Synthetic history fixture"),
             )
         else:
+            retire_catalog(db)
             db.execute(
                 sa.update(NphiesTerminology)
                 .where(NphiesTerminology.code_system_url == DIAGNOSIS_SYSTEM)
@@ -336,6 +367,7 @@ def test_state_uses_highest_attempt_number_instead_of_time_events_or_claim_statu
         # Restore only fixture terminology before producing the older PASSED attempt.
         with context.factory.begin() as db:
             db.execute(sa.update(NphiesTerminology).values(is_deleted=False))
+            synthetic_catalog(db)
     append_attempt(
         context,
         public_id,
@@ -460,6 +492,7 @@ def test_reads_do_not_revalidate_query_current_state_write_or_commit(
                 context=MutationContext(reason="Synthetic current-state change"),
             )
         db.execute(sa.update(NphiesTerminology).values(is_deleted=True))
+        retire_catalog(db)
     for module, name in (
         (claim_intake, "evaluate_report"),
         (claim_validation, "evaluate_report"),

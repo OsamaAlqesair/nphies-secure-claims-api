@@ -23,6 +23,7 @@ from services.terminology import DIAGNOSIS_SYSTEM, SERVICE_SYSTEMS
 from test_claim_router import context, payload, rule
 from test_coverage_writers import writer_db
 from test_terminology_identity import postgres_engine
+from testing_catalog import synthetic_catalog, retire_catalog
 
 
 @pytest.fixture
@@ -42,6 +43,7 @@ def business_db(writer_db):
                 ),
             ]
         )
+        synthetic_catalog(db)
     return writer_db
 
 
@@ -134,6 +136,9 @@ def test_direct_terminology_failures_never_resolve_coverage(business_db, failure
                 term.soft_delete()
             if failure != "catalog":
                 db.add(NphiesTerminology(code="J00", code_system_url=DIAGNOSIS_SYSTEM))
+                synthetic_catalog(db)
+            else:
+                retire_catalog(db)
         if failure == "service":
             db.scalar(
                 sa.select(NphiesTerminology).where(NphiesTerminology.code == "70450")
@@ -333,6 +338,10 @@ def test_both_routes_share_evaluator_and_audit_semantics(
                     term.soft_delete()
                 else:
                     term.is_active = False
+            if case == "catalog":
+                retire_catalog(db)
+            else:
+                synthetic_catalog(db)
         if case == "ambiguous":
             db.add(
                 NphiesTerminology(

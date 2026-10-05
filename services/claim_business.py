@@ -19,6 +19,8 @@ from services.coverage import (
 from services.diagnosis_catalog import (
     DiagnosisCatalogMissingError,
     MISSING_CATALOG_CODE,
+    CatalogIdentity,
+    require_diagnosis_catalog,
 )
 from services.terminology import (
     AmbiguousTerminologyError,
@@ -51,6 +53,7 @@ class BusinessResult:
     service: TermIdentity | None = None
     coverage: CoverageDecision | None = None
     reason: str | None = None
+    catalog: CatalogIdentity | None = None
 
     @property
     def is_valid(self) -> bool:
@@ -78,11 +81,23 @@ class ClaimBusinessEvaluator:
         self.terms = {}
         self.decisions = {}
         self.insurers = {}
+        self.catalog = None
+        self.catalog_checked = False
 
     def _term(self, code, systems):
         key = (code, systems)
         if key not in self.terms:
-            self.terms[key] = find_term(self.db, code, systems)
+            if systems == (DIAGNOSIS_SYSTEM,):
+                if not self.catalog_checked:
+                    self.catalog_checked = True
+                    self.catalog = require_diagnosis_catalog(self.db)
+                if self.catalog is None:
+                    raise DiagnosisCatalogMissingError
+                self.terms[key] = find_term(
+                    self.db, code, systems, catalog=self.catalog
+                )
+            else:
+                self.terms[key] = find_term(self.db, code, systems)
         return self.terms[key]
 
     def evaluate(self, pair: BusinessPair) -> BusinessResult:
@@ -102,7 +117,12 @@ class ClaimBusinessEvaluator:
                 )
 
             return BusinessResult(
-                pair, identity(diagnosis), identity(service), coverage, reason
+                pair,
+                identity(diagnosis),
+                identity(service),
+                coverage,
+                reason,
+                self.catalog,
             )
 
         try:

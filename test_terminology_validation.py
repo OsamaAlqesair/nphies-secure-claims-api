@@ -5,6 +5,7 @@ from sqlalchemy import select, create_engine
 from sqlalchemy.exc import IntegrityError
 from models import NphiesTerminology, DiagnosisCode, ServiceCode
 from services.terminology import DIAGNOSIS_SYSTEM, SERVICE_SYSTEMS
+from testing_catalog import synthetic_catalog, retire_catalog
 from test_main import database, client, payload, add_rule
 
 
@@ -22,6 +23,8 @@ def test_ineligible_terminology_rejects_legacy_known_code(
             term.soft_delete()
         else:
             term.code_system_url = "http://nphies.sa/terminology/CodeSystem/claim-type"
+        if kind == "diagnosis":
+            synthetic_catalog(db)
         db.commit()
     response = client.post("/process-claim", json=payload)
     assert response.status_code == 400
@@ -51,6 +54,9 @@ def test_valid_terminology_without_rule_mapping_denies(client, database, payload
         )
         db.commit()
     payload[kind + "_code"] = "NEW"
+    if kind == "diagnosis":
+        with database.begin() as db:
+            synthetic_catalog(db)
     response = client.post("/process-claim", json=payload)
     assert response.status_code == 422
     assert (
@@ -129,6 +135,7 @@ def test_missing_diagnosis_catalog_has_distinct_outcome(client, database, payloa
     from diagnosis_systems import ICD10_AM_SYSTEM
 
     with database() as db:
+        retire_catalog(db)
         db.execute(
             update(NphiesTerminology)
             .where(NphiesTerminology.code_system_url == ICD10_AM_SYSTEM)

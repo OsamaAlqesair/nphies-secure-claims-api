@@ -34,6 +34,7 @@ from services.claim_intake import ClaimIntakeUnavailable
 from services.coverage_mutations import MutationContext, create_rule, soft_delete_rule
 from services.coverage_write_guards import register_coverage_engine
 from services.terminology import DIAGNOSIS_SYSTEM
+from testing_catalog import retire_catalog, synthetic_catalog
 from test_claim_intakes import PATH, configure, history, intake_context, post
 from test_fhir_claim import payload
 from test_terminology_identity import postgres_engine
@@ -58,6 +59,7 @@ def revalidate(context, public_id, key=None, owner=1, **kwargs):
 def change_environment(context, result):
     with context.factory.begin() as db:
         if result == "UNAVAILABLE":
+            retire_catalog(db)
             db.execute(
                 sa.update(NphiesTerminology)
                 .where(NphiesTerminology.code_system_url == DIAGNOSIS_SYSTEM)
@@ -84,6 +86,30 @@ def assert_previous_unchanged(previous, current):
     assert current["claim_intakes"] == previous["claim_intakes"]
     for name in ("claim_validation_attempts", "claim_intake_events", "audit_logs"):
         assert current[name][: len(previous[name])] == previous[name]
+
+
+def test_catalog_switch_preserves_each_attempt_identity(existing):
+    context, public_id = existing
+    previous = history(context)
+    old_catalog = previous["claim_validation_attempts"][0][
+        "validation_report_snapshot"
+    ]["observations"][0]["business_result"]["catalog"]
+    with context.factory.begin() as db:
+        new_id = synthetic_catalog(db)
+    assert new_id != old_catalog["id"]
+    assert revalidate(context, public_id).status_code == 201
+    current = history(context)
+    assert_previous_unchanged(previous, current)
+    new_catalog = current["claim_validation_attempts"][-1][
+        "validation_report_snapshot"
+    ]["observations"][0]["business_result"]["catalog"]
+    assert new_catalog["id"] == new_id
+    response = context.client.get(PATH + "/" + public_id + "/validations")
+    assert response.status_code == 200
+    assert [
+        row["validation_report"]["observations"][0]["business_result"]["catalog"]["id"]
+        for row in response.json()
+    ] == [old_catalog["id"], new_id]
 
 
 @pytest.mark.parametrize("result", ["PASSED", "FAILED", "UNAVAILABLE"])

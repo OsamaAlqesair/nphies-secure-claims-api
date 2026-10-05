@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from main import app, get_db
 from testing_auth import provider_headers
+from testing_catalog import synthetic_catalog
 from testing_coverage import audited_rule
 from models import (
     Base,
@@ -48,6 +49,10 @@ def database(request, monkeypatch) -> Iterator[sessionmaker[Session]]:
         ownership.enter_context(owned_sqlite(engine))
         monkeypatch.setattr(database_module, "engine", engine)
         command.upgrade(Config("alembic.ini"), "0008_coverage_writer_sources")
+        from models import TerminologyCatalog, TerminologyCatalogEntry
+
+        TerminologyCatalog.__table__.create(engine)
+        TerminologyCatalogEntry.__table__.create(engine)
     else:
         Base.metadata.create_all(engine)
     sessions = sessionmaker(
@@ -88,6 +93,7 @@ def database(request, monkeypatch) -> Iterator[sessionmaker[Session]]:
                 InsuranceCompany(id=2, name="Test insurer 2"),
             ]
         )
+        synthetic_catalog(db)
         db.commit()
     try:
         yield sessions

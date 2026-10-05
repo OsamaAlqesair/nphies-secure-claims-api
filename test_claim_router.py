@@ -25,6 +25,7 @@ from models import (
     AuditLog,
 )
 from testing_auth import provider_headers
+from testing_catalog import synthetic_catalog, retire_catalog
 from testing_coverage import audited_rule
 from test_fhir_claim import payload  # Shared synthetic FHIR fixture.
 
@@ -54,6 +55,10 @@ def context(tmp_path, request, monkeypatch):
 
         monkeypatch.setattr(database, "engine", engine)
         command.upgrade(Config("alembic.ini"), "0008_coverage_writer_sources")
+        from models import TerminologyCatalog, TerminologyCatalogEntry
+
+        TerminologyCatalog.__table__.create(engine)
+        TerminologyCatalogEntry.__table__.create(engine)
     else:
         Base.metadata.create_all(engine)
     sessions = sessionmaker(
@@ -101,6 +106,8 @@ def context(tmp_path, request, monkeypatch):
                 ),
             ]
         )
+        db.commit()
+        synthetic_catalog(db)
         db.commit()
         headers = provider_headers(db)
 
@@ -399,6 +406,8 @@ def test_inactive_term_rejects_covered_pair(context, payload, kind):
             )
         )
         term.is_active = False
+        if kind == "diagnosis":
+            synthetic_catalog(db)
         db.commit()
     issues = outcome(client.post(PATH, json=payload), 422)
     assert issues[0]["diagnostics"] == (
@@ -526,6 +535,7 @@ def test_missing_diagnosis_catalog_fhir_gate(context, payload):
     client, sessions = context
     rule(sessions, True)
     with sessions() as db:
+        retire_catalog(db)
         db.execute(
             update(NphiesTerminology)
             .where(NphiesTerminology.code_system_url == ICD10_AM_SYSTEM)

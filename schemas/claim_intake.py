@@ -128,6 +128,18 @@ class HistoricalCoverage(HistoricalModel):
     is_covered: StrictBool
 
 
+class HistoricalCatalogIdentity(HistoricalModel):
+    id: PositiveNumber
+    family: str
+    edition: str
+    source_sha256: str
+    parser_version: str
+    artifact_schema: str
+    artifact_sha256: str
+    content_sha256: str
+    reconstruction_label: str
+
+
 class HistoricalBusinessResult(HistoricalModel):
     pair: HistoricalPair
     diagnosis: HistoricalTerm | None
@@ -135,6 +147,7 @@ class HistoricalBusinessResult(HistoricalModel):
     reason: str | None
     is_valid: StrictBool
     coverage: HistoricalCoverage | None
+    catalog: HistoricalCatalogIdentity | None = None
 
 
 class HistoricalObservation(HistoricalModel):
@@ -165,13 +178,28 @@ class HistoricalTermination(HistoricalModel):
 
 
 class HistoricalValidationReport(HistoricalModel):
-    schema_version: Literal["claim-validation-report-v1"]
+    schema_version: Literal["claim-validation-report-v1", "claim-validation-report-v2"]
     result: Literal["passed", "failed", "unavailable"]
     insurer: HistoricalInsurer
     observations: list[HistoricalObservation]
     findings: list[HistoricalFinding]
     skipped_item_sequences: list[PositiveNumber]
     termination: HistoricalTermination | None
+
+    @model_validator(mode="after")
+    def catalog_contract(self):
+        for observation in self.observations:
+            business = observation.business_result
+            has_catalog = "catalog" in business.model_fields_set
+            if self.schema_version == "claim-validation-report-v1":
+                if has_catalog:
+                    raise ValueError("Version 1 did not record catalog identity.")
+            elif not has_catalog or (
+                (business.catalog is None)
+                != (business.reason == "icd10_am_catalog_missing")
+            ):
+                raise ValueError("Version 2 requires the evaluated catalog identity.")
+        return self
 
 
 class ClaimValidationHistoryItem(HistoricalModel):
@@ -194,6 +222,10 @@ class ClaimValidationHistoryItem(HistoricalModel):
     @field_serializer("operation_outcome", when_used="json")
     def outcome_snapshot(self, value):
         # Keep explicit historical nulls, without adding absent optional fields.
+        return value.model_dump(mode="json", exclude_unset=True)
+
+    @field_serializer("validation_report", when_used="json")
+    def report_snapshot(self, value):
         return value.model_dump(mode="json", exclude_unset=True)
 
 

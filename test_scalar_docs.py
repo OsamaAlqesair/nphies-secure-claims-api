@@ -69,6 +69,8 @@ def test_docs_follow_host_and_proxy_prefix():
 
 @pytest.fixture
 def isolated_client():
+    from testing_catalog import synthetic_catalog
+
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -89,6 +91,7 @@ def isolated_client():
                 ),
             ]
         )
+        synthetic_catalog(db)
         db.commit()
 
     with sessions() as db:

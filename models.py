@@ -468,6 +468,34 @@ class NphiesTerminology(Base):
 # History shares migration metadata, but has no mutable audit/soft-delete mixin.
 HistoryBase = declarative_base(metadata=Base.metadata)
 
+# Versioned diagnosis membership is deliberately separate from legacy/service
+# terminology and coverage mapping IDs. No legacy row acquires provenance.
+from services.catalog_schema import (
+    tables as _catalog_tables,
+    install_guards as _catalog_guards,
+)
+
+_catalog_table, _catalog_entry_table = _catalog_tables(Base.metadata)
+
+
+class TerminologyCatalog(HistoryBase):
+    __table__ = _catalog_table
+
+
+class TerminologyCatalogEntry(HistoryBase):
+    __table__ = _catalog_entry_table
+
+    @property
+    def code_system_url(self):
+        from diagnosis_systems import ICD10_AM_SYSTEM
+
+        return ICD10_AM_SYSTEM
+
+
+@event.listens_for(_catalog_entry_table, "after_create")
+def _install_catalog_guards(target, connection, **kw):
+    _catalog_guards(connection)
+
 
 def _history_uuid(value):
     try:

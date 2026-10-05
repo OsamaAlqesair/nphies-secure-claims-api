@@ -823,7 +823,14 @@ def test_migration_preserves_existing_data_and_refuses_downgrade(history_engine)
         )
         assert (
             compare_metadata(
-                MigrationContext.configure(connection, opts={"compare_type": True}),
+                MigrationContext.configure(
+                    connection,
+                    opts={
+                        "compare_type": True,
+                        "include_object": lambda obj, name, kind, reflected, compare_to: name
+                        not in {"terminology_catalogs", "terminology_catalog_entries"},
+                    },
+                ),
                 Base.metadata,
             )
             == []
@@ -846,5 +853,6 @@ def test_migration_preserves_existing_data_and_refuses_downgrade(history_engine)
 
 def test_alembic_head_and_parent():
     script = ScriptDirectory(str(ROOT / "alembic"))
-    assert script.get_heads() == [HEAD]
+    assert script.get_heads() == ["0011_terminology_catalogs"]
+    assert script.get_revision("0011_terminology_catalogs").down_revision == HEAD
     assert script.get_revision(HEAD).down_revision == PARENT

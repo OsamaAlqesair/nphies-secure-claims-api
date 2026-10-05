@@ -522,6 +522,8 @@ def test_writer_source_migration_preserves_history_and_refuses_destructive_downg
                     "claim_intakes",
                     "claim_validation_attempts",
                     "claim_intake_events",
+                    "terminology_catalogs",
+                    "terminology_catalog_entries",
                 }
             },
         )

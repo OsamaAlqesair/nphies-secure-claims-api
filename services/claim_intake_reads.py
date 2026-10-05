@@ -197,7 +197,11 @@ def validation_history(
     for row in rows:
         outcome = row["operation_outcome_snapshot"]
         if (
-            row["validation_schema_version"] != "claim-validation-report-v1"
+            row["validation_schema_version"]
+            not in ("claim-validation-report-v1", "claim-validation-report-v2")
+            or not isinstance(row["validation_report_snapshot"], dict)
+            or row["validation_report_snapshot"].get("schema_version")
+            != row["validation_schema_version"]
             or not isinstance(outcome, dict)
             or outcome.get("resourceType") != "OperationOutcome"
         ):

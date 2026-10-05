@@ -648,6 +648,8 @@ def test_history_source_migration_preserves_events_and_schema(lifecycle_db):
                     "claim_intakes",
                     "claim_validation_attempts",
                     "claim_intake_events",
+                    "terminology_catalogs",
+                    "terminology_catalog_entries",
                 }
             },
         )
